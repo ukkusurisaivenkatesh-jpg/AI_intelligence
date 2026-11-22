@@ -6,6 +6,9 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.seed import seed
+from app.catalogue import PROGRAMMES, UNIVERSITIES, seed_catalogue
+from app.models import Programme, University
+from app.services import evaluate_eligibility, rank_recommendations
 
 
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -13,6 +16,17 @@ TestingSession = sessionmaker(bind=engine)
 Base.metadata.create_all(bind=engine)
 with TestingSession() as db:
     seed(db)
+    seed_catalogue(db)
+    university = University(name="Test Fixture University", location="Pune", verification_status="PENDING_VERIFICATION")
+    db.add(university)
+    db.flush()
+    db.add(Programme(
+        university_id=university.id,
+        name="Test Fixture Programme",
+        data_status="test_fixture",
+        verification_status="PENDING_VERIFICATION",
+    ))
+    db.commit()
 
 
 def override_db():
@@ -35,7 +49,26 @@ def auth_headers():
 
 def test_health_and_programmes():
     assert client.get("/api/health").json()["status"] == "ok"
-    assert len(client.get("/api/programmes").json()) >= 5
+    programmes = client.get("/api/programmes").json()
+    assert programmes == []
+    assert client.get("/api/programmes/1").status_code == 404
+    assert client.get("/api/careers").json() == []
+
+
+def test_official_catalogue_seed_is_pending_and_idempotent():
+    with TestingSession() as db:
+        university_count = db.query(University).count()
+        programme_count = db.query(Programme).count()
+        seed_catalogue(db)
+        assert db.query(University).count() == university_count
+        assert db.query(Programme).count() == programme_count
+        assert university_count == len(UNIVERSITIES) + 1
+        assert programme_count == len(PROGRAMMES) + 1
+        assert db.query(University).filter(University.verification_status == "PENDING_VERIFICATION").count() == len(UNIVERSITIES)
+        assert db.query(Programme).filter(Programme.verification_status == "PENDING_VERIFICATION").count() == len(PROGRAMMES) + 1
+        anna = db.query(University).filter(University.name == "Anna University").one()
+        assert anna.verification_status == "VERIFIED"
+        assert anna.academic_year == "2026-27"
 
 
 def test_cors_preflight_allows_frontend_requests():
@@ -54,9 +87,37 @@ def test_cors_preflight_allows_frontend_requests():
 def test_knowledge_graph_reports_service_status():
     response = client.get("/api/knowledge/graph")
     assert response.status_code == 200
-    assert isinstance(response.json()["available"], bool)
-    if not response.json()["available"]:
-        assert response.json()["message"]
+    payload = response.json()
+    assert isinstance(payload["available"], bool)
+    assert isinstance(payload["nodes"], list)
+    assert isinstance(payload["edges"], list)
+    if not payload["available"]:
+        assert payload["message"]
+    for node in payload["nodes"]:
+        assert {"id", "label", "name"} <= node.keys()
+    for edge in payload["edges"]:
+        assert {"source", "target", "label"} <= edge.keys()
+
+
+def test_unverified_catalogue_criteria_cannot_produce_eligibility_or_affordability():
+    profile = {
+        "qualification": "12th Grade",
+        "aggregate_marks": 100,
+        "subject_marks": {"Mathematics": 100, "Applied Mathematics": 100},
+        "entrance_scores": {},
+        "annual_budget": 1_000_000,
+    }
+    with TestingSession() as db:
+        programme = db.query(Programme).filter(Programme.name == "BCA (Bachelor of Computer Applications)").one()
+        result = evaluate_eligibility(profile, programme, academic_year="2024-25")
+
+        assert programme.verification_status == "PENDING_VERIFICATION"
+        assert result["status"] == "Insufficient Information"
+        assert result["satisfied"] == []
+        assert result["programme"]["minimum_percentage"] is None
+        assert result["programme"]["additional_admission_conditions"] == []
+        assert result["affordability"]["status"] == "unknown"
+        assert rank_recommendations(profile, [programme], academic_year="2024-25") == []
 
 
 def test_profile_update_and_dashboard():
@@ -114,6 +175,31 @@ def test_admin_identity_and_permissions():
     headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
     assert client.get("/api/auth/me", headers=headers).json()["role"] == "admin"
     assert client.get("/api/admin/overview", headers=headers).status_code == 200
+    records = client.get("/api/admin/programmes", headers=headers)
+    assert records.status_code == 200
+    assert records.json()[0]["verification_status"] == "PENDING_VERIFICATION"
+    assert client.get("/api/admin/careers", headers=headers).status_code == 200
+
+
+def test_admin_cannot_create_verified_university_without_review():
+    response = client.post(
+        "/api/auth/login",
+        json={"email": "admin@admitwise.demo", "password": "Admin123!"},
+    )
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
+    created = client.post(
+        "/api/admin/universities",
+        headers=headers,
+        json={
+            "name": "Unreviewed Institution",
+            "verification_status": "VERIFIED",
+            "source_url": "https://example.test/unreviewed",
+        },
+    )
+    assert created.status_code == 200
+    records = client.get("/api/admin/universities", headers=headers).json()
+    record = next(item for item in records if item["name"] == "Unreviewed Institution")
+    assert record["verification_status"] == "PENDING_VERIFICATION"
 
 
 def test_counsellor_rejects_empty_message():

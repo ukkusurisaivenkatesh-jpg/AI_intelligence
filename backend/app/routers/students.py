@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..auth import get_current_user
@@ -34,11 +34,11 @@ def save_profile(payload: ProfileRequest, user: User = Depends(get_current_user)
 
 
 @router.get("/me/dashboard")
-def dashboard(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def dashboard(academic_year: str = Query(default=""), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from ..models import Programme
     from ..services import rank_recommendations
     profile = db.query(StudentProfile).filter(StudentProfile.user_id == user.id).first()
     profile_data = profile_dict(profile)
     programmes = db.query(Programme).all()
-    recommendations = rank_recommendations(profile_data, programmes)[:5]
-    return {"student": {"name": user.full_name, "email": user.email}, "profile": profile_data, "recommendations": recommendations, "shortlist_count": db.query(Shortlist).filter(Shortlist.user_id == user.id).count()}
+    recommendations = rank_recommendations(profile_data, programmes, academic_year=academic_year or None)[:5]
+    return {"student": {"name": user.full_name, "email": user.email}, "profile": profile_data, "academic_year": academic_year or None, "recommendations": recommendations, "shortlist_count": db.query(Shortlist).filter(Shortlist.user_id == user.id).count()}
