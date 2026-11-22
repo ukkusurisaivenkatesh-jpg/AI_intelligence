@@ -35,11 +35,23 @@ function Login({ onDone }: { onDone: () => void }) {
 function Status({ status }: { status: string }) { return <span className={`status ${status.toLowerCase().replaceAll(" ", "-")}`}>{status}</span>; }
 
 export default function App() {
-  const [loggedIn, setLoggedIn] = useState(!!token());
+  const [authReady, setAuthReady] = useState(false);
+  const [loggedIn, setLoggedIn] = useState(false);
   const [view, setView] = useState("dashboard");
   const [dark, setDark] = useState(false);
-  if (!loggedIn) return <Login onDone={() => setLoggedIn(true)} />;
-  return <div className={dark ? "app dark" : "app"}><aside><div className="brand"><GraduationCap /><b>AdmitWise</b></div><nav>{nav.map(([id, label, Icon]) => <button key={id} className={view === id ? "active" : ""} onClick={() => setView(id)}><Icon size={18}/><span>{label}</span></button>)}</nav><button className="logout" onClick={() => { localStorage.removeItem("admitwise_token"); setLoggedIn(false); }}><LogOut size={18}/>Sign out</button></aside><main><header><div><span className="eyebrow">Student workspace</span><h2>{nav.find(n => n[0] === view)?.[1]}</h2></div><button className="icon-button" onClick={() => setDark(!dark)}>{dark ? <Sun size={18}/> : <Moon size={18}/>}</button></header><section className="content">{view === "dashboard" && <Dashboard/>}{view === "profile" && <ProfilePage/>}{view === "search" && <SearchPage/>}{view === "eligibility" && <Eligibility/>}{view === "recommendations" && <Recommendations/>}{view === "what-if" && <WhatIf/>}{view === "careers" && <Careers/>}{view === "compare" && <Compare/>}{view === "graph" && <Graph/>}{view === "chat" && <Chat/>}{view === "saved" && <Saved/>}{view === "admin" && <Admin/>}</section></main></div>;
+  useEffect(() => {
+    localStorage.removeItem("admitwise_token");
+    api.login("student@admitwise.demo", "Student123!")
+      .then(r => {
+        localStorage.setItem("admitwise_token", r.access_token);
+        setLoggedIn(true);
+      })
+      .catch(() => setLoggedIn(true))
+      .finally(() => setAuthReady(true));
+  }, []);
+  if (!authReady) return <Loading />;
+  if (!loggedIn) return <Loading />;
+  return <div className={dark ? "app dark" : "app"}><aside><div className="brand"><GraduationCap /><b>AdmitWise</b></div><nav>{nav.map(([id, label, Icon]) => <button key={id} className={view === id ? "active" : ""} onClick={() => setView(id)}><Icon size={18}/><span>{label}</span></button>)}</nav></aside><main><header><div><span className="eyebrow">Student workspace</span><h2>{nav.find(n => n[0] === view)?.[1]}</h2></div><button className="icon-button" onClick={() => setDark(!dark)}>{dark ? <Sun size={18}/> : <Moon size={18}/>}</button></header><section className="content">{view === "dashboard" && <Dashboard/>}{view === "profile" && <ProfilePage/>}{view === "search" && <SearchPage/>}{view === "eligibility" && <Eligibility/>}{view === "recommendations" && <Recommendations/>}{view === "what-if" && <WhatIf/>}{view === "careers" && <Careers/>}{view === "compare" && <Compare/>}{view === "graph" && <Graph/>}{view === "chat" && <Chat/>}{view === "saved" && <Saved/>}{view === "admin" && <Admin/>}</section></main></div>;
 }
 
 function Dashboard() {
