@@ -1,10 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..auth import require_admin
 from ..models import User, University, Programme, Career, Rule, AuditLog
 from ..engine.rules import RuleEngine
 from ..services import programme_dict
+from ..schemas import RuleCreateRequest, UniversityCreateRequest
+from sqlalchemy.exc import IntegrityError
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -63,39 +65,78 @@ def careers(db: Session = Depends(get_db), admin: User = Depends(require_admin))
     } for c in db.query(Career).all()]
 
 
+@router.get("/audit-logs")
+def audit_logs(
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    entries = db.query(AuditLog).order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(limit).all()
+    return [{
+        "id": entry.id,
+        "actor": entry.actor,
+        "action": entry.action,
+        "entity_type": entry.entity_type,
+        "entity_id": entry.entity_id,
+        "payload": entry.payload or {},
+        "created_at": entry.created_at.isoformat() if entry.created_at else None,
+    } for entry in entries]
+
+
 @router.post("/universities")
-def create_university(payload: dict, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+def create_university(payload: UniversityCreateRequest, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    audit_payload = payload.model_dump(mode="json")
     u = University(
-        name=payload["name"],
-        location=payload.get("location"),
-        region=payload.get("region"),
-        website=payload.get("website"),
-        institution_type=payload.get("institution_type"),
-        state=payload.get("state"),
-        city=payload.get("city"),
-        recognition_info=payload.get("recognition_info"),
-        source_url=payload.get("source_url"),
-        source_title=payload.get("source_title"),
-        academic_year=payload.get("academic_year"),
-        data_notes=payload.get("data_notes"),
+        name=payload.name,
+        location=payload.location,
+        region=payload.region,
+        website=str(payload.website) if payload.website else None,
+        institution_type=payload.institution_type,
+        state=payload.state,
+        city=payload.city,
+        recognition_info=payload.recognition_info,
+        source_url=str(payload.source_url) if payload.source_url else None,
+        source_title=payload.source_title,
+        academic_year=payload.academic_year,
+        data_notes=payload.data_notes,
         data_status="unverified",
         verification_status="PENDING_VERIFICATION",
     )
     db.add(u)
-    db.commit()
-    db.refresh(u)
-    db.add(AuditLog(actor=admin.email, action="create", entity_type="university", entity_id=str(u.id), payload=payload))
-    db.commit()
-    return {"id": u.id, "name": u.name}
+    try:
+        db.flush()
+        db.add(AuditLog(actor=admin.email, action="create", entity_type="university", entity_id=str(u.id), payload=audit_payload))
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(409, "Institution could not be added because of a catalogue conflict") from error
+    return {"id": u.id, "name": u.name, "verification_status": u.verification_status}
 
 
 @router.post("/rules")
-def create_rule(payload: dict, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+def create_rule(payload: RuleCreateRequest, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     engine = RuleEngine()
-    engine.validate_rule(payload)
-    rule = Rule(id=payload["id"], name=payload["name"], description=payload.get("description"), conditions=payload["conditions"], result=payload["result"], priority=payload.get("priority", 100), source=payload.get("source"), active=payload.get("active", True))
+    rule_data = payload.model_dump(mode="json")
+    try:
+        engine.validate_rule(rule_data)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    rule = Rule(
+        id=payload.id,
+        name=payload.name,
+        description=payload.description,
+        conditions=payload.conditions,
+        result=payload.result,
+        priority=payload.priority,
+        source=payload.source,
+        active=payload.active,
+    )
     db.add(rule)
-    db.commit()
-    db.add(AuditLog(actor=admin.email, action="publish_rule", entity_type="rule", entity_id=rule.id, payload=payload))
-    db.commit()
-    return {"id": rule.id, "validated": True}
+    try:
+        db.flush()
+        db.add(AuditLog(actor=admin.email, action="publish_rule", entity_type="rule", entity_id=rule.id, payload=rule_data))
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(409, "A rule with this ID already exists") from error
+    return {"id": rule.id, "validated": True, "active": rule.active}

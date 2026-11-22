@@ -1,9 +1,14 @@
 from sqlalchemy.orm import Session
+
+from .config import settings
 from .models import User, StudentProfile
 from .auth import hash_password
 
 
 def seed(db: Session):
+    if settings.app_env not in {"development", "test"}:
+        raise RuntimeError("Demo account seeding is allowed only in development or test")
+
     if db.query(User).first():
         return
 

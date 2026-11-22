@@ -10,8 +10,8 @@ router = APIRouter(prefix="/api/students", tags=["students"])
 
 def profile_dict(profile):
     if not profile:
-        return {"qualification": None, "aggregate_marks": None, "subject_marks": {}, "entrance_scores": {}, "interests": [], "aptitude": {}, "skills": [], "preferred_location": None, "annual_budget": None}
-    return {k: getattr(profile, k) for k in ("qualification", "aggregate_marks", "subject_marks", "entrance_scores", "interests", "aptitude", "skills", "preferred_location", "annual_budget")}
+        return {"qualification": None, "aggregate_marks": None, "subject_marks": {}, "entrance_scores": {}, "interests": [], "aptitude": {}, "skills": [], "preferred_location": None, "annual_budget": None, "profile": {}}
+    return {k: getattr(profile, k) for k in ("qualification", "aggregate_marks", "subject_marks", "entrance_scores", "interests", "aptitude", "skills", "preferred_location", "annual_budget", "profile")}
 
 
 @router.get("/me/profile")
@@ -34,7 +34,7 @@ def save_profile(payload: ProfileRequest, user: User = Depends(get_current_user)
 
 
 @router.get("/me/dashboard")
-def dashboard(academic_year: str = Query(default=""), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def dashboard(academic_year: str = Query(default="", max_length=20), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     from ..models import Programme
     from ..services import rank_recommendations
     profile = db.query(StudentProfile).filter(StudentProfile.user_id == user.id).first()

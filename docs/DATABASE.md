@@ -2,6 +2,23 @@
 
 PostgreSQL is the structured source of truth. SQLite is supported for local development and tests.
 
+Backend settings always load `backend/.env` using an absolute path, independent
+of the command's working directory. `DATABASE_URL` is required; there is no
+implicit SQLite fallback. Set `APP_ENV=development` with an explicit SQLite
+URL for local development, `APP_ENV=test` for tests, and `APP_ENV=staging` with
+a PostgreSQL URL plus distinct `STAGING_NEON_BRANCH_ID` and
+`PRODUCTION_NEON_BRANCH_ID` values for staging. Production defaults to
+`APP_ENV=production` and must receive its PostgreSQL URL through a protected
+runtime environment or local `backend/.env`. Do not commit or copy `.env` into
+Docker images.
+
+Schema creation, demo seeding, and catalogue imports do not run at application
+startup in staging or production. The catalogue import
+function refuses production and verifies the connected Neon branch ID against
+the configured staging branch before writing. Migration `0002` also requires
+explicit staging environment and branch-ID session settings and checks the
+actual Neon branch before changing schema or catalogue rows.
+
 Main tables:
 - `users`: authentication and RBAC
 - `student_profiles`: saved student facts
@@ -13,12 +30,17 @@ Main tables:
 - `chat_messages`: persisted counselling questions and grounded responses
 - `audit_logs`: administrative changes
 
-The application creates missing tables at startup. It does not alter existing
-PostgreSQL tables. Apply `backend/migrations/0002_catalogue_provenance.sql` once
-to an existing PostgreSQL database before deploying this version. The migration
-preserves users, profiles, and shortlists. Legacy demo universities, programmes,
-fees, and inference rules are marked unavailable or inactive rather than being
-silently treated as real or being deleted.
+In development and tests, application startup can create missing tables and
+seed isolated local data. Staging and production startup performs no DDL,
+seeding, or catalogue import. The semantic-network endpoint reads existing
+application records and does not create, synchronize, or delete graph data.
+Do not apply
+`backend/migrations/0002_catalogue_provenance.sql` blindly: first compare the
+live schema with the migration and confirm the target branch. The current
+staging schema already contains the migration columns, but there is no migration
+ledger proving which command applied them. Do not rerun it solely to create a
+history record. The migration is designed to preserve users, profiles, and
+shortlists.
 
 University and programme catalogue rows carry verification status, source
 metadata, and an academic year. Each programme row represents one programme
@@ -48,16 +70,16 @@ measures are collected. Additional conditions use JSON objects with `label`,
 `lte`, `lt`, `in`, `contains`, and `has_any_key`. Missing facts or unsupported
 condition formats produce insufficient information, never a pass.
 
-The demo catalogue is intentionally no longer seeded. Until an institution and
-its programme criteria are entered and verified from official sources, the
-catalogue and recommendation results remain empty or report insufficient
-information. No production database was migrated by this code change; deployers
-must apply the SQL migration to their own database.
+The catalogue importer contains 20 institutions and 16 programmes, retaining
+their source and verification metadata. Development/test may seed isolated
+local fixtures; a staging import is explicit, guarded, and must be preceded by
+a fresh live-branch check. Pending criteria are excluded from public programme
+results and cannot produce definitive eligibility, affordability, or
+recommendations. No production migration, import, deployment, or push is
+authorized by these instructions.
 
-Neo4j is optional. On startup, the backend synchronizes source-backed institutions
-and programmes, including their verification metadata and institution, programme,
-and fee source relationships. If Neo4j is unavailable or misconfigured, startup
-continues with a warning and the graph API reports the service as unavailable;
-the frontend identifies its SQL-backed relationship preview explicitly. Set
-`NEO4J_URI`, `NEO4J_USER`, and `NEO4J_PASSWORD` in the backend environment when a
-reachable graph service is available; never commit credentials in `.env` files.
+The semantic network is computed on demand from the existing PostgreSQL or
+SQLite records. It does not require a separate graph database, graph-specific
+environment variables, schema, or synchronization process. Student-specific
+relationships are returned only to the authenticated student who owns that
+profile. Unverified admission requirements are omitted from requirement edges.

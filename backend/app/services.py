@@ -3,11 +3,12 @@ from copy import deepcopy
 
 DEFAULT_WEIGHTS = {
     "academic": 25,
+    "entrance": 10,
     "interest": 20,
     "aptitude": 15,
     "budget": 15,
     "location": 10,
-    "career": 15,
+    "career": 5,
 }
 
 
@@ -252,6 +253,9 @@ def evaluate_eligibility(profile, programme, academic_year=None):
                 path = field.split(".")
                 if path[0] == "profile":
                     path = path[1:]
+                    nested_profile = profile.get("profile")
+                    if isinstance(nested_profile, dict) and path and path[0] in nested_profile:
+                        actual = nested_profile
                 for part in path:
                     if isinstance(actual, dict) and part in actual:
                         actual = actual[part]
@@ -328,8 +332,36 @@ def suitability_score(profile, programme, weights=None):
     p = programme_dict(programme) if hasattr(programme, "id") else deepcopy(programme)
     factors = {}
     aggregate = profile.get("aggregate_marks")
-    minimum = p["minimum_percentage"]
-    factors["academic"] = round(min(100, 100 * aggregate / minimum), 1) if aggregate is not None and minimum else 50
+    factors["academic"] = round(float(aggregate), 1) if aggregate is not None else 50
+
+    entrance_factors = []
+    entrance_scores = profile.get("entrance_scores") or {}
+    for exam in p.get("entrance_exams") or []:
+        requirement = (p.get("entrance_requirements") or {}).get(exam, {})
+        if not isinstance(requirement, dict):
+            continue
+        result = entrance_scores.get(exam)
+        if result is None:
+            continue
+        score = result.get("score") if isinstance(result, dict) else result
+        rank = result.get("rank") if isinstance(result, dict) else None
+        minimum_score = requirement.get("minimum_score")
+        maximum_score = requirement.get("maximum_score")
+        maximum_rank = requirement.get("maximum_rank")
+        if (
+            score is not None
+            and minimum_score is not None
+            and maximum_score is not None
+            and maximum_score > minimum_score
+        ):
+            entrance_factors.append(
+                max(0, min(100, 100 * (score - minimum_score) / (maximum_score - minimum_score)))
+            )
+        elif rank is not None and maximum_rank is not None and maximum_rank > 0:
+            entrance_factors.append(max(0, min(100, 100 * (maximum_rank - rank) / maximum_rank)))
+        elif score is not None and minimum_score is not None:
+            entrance_factors.append(50)
+    factors["entrance"] = round(sum(entrance_factors) / len(entrance_factors), 1) if entrance_factors else 50
     interests = set(profile.get("interests") or [])
     discipline = (p["discipline"] or "").lower()
     name = (p["name"] or "").lower()
@@ -340,7 +372,11 @@ def suitability_score(profile, programme, weights=None):
     budget = profile.get("annual_budget")
     fee_verified = bool(p.get("academic_year")) and fee_is_verified(p, p.get("academic_year"))
     fee = p["annual_fee"] if fee_verified else None
-    factors["budget"] = 100 if budget is not None and fee is not None and budget >= fee else (70 if budget is None or fee is None else max(0, 100 - (fee - budget) / max(fee, 1) * 100))
+    factors["budget"] = (
+        50
+        if budget is None or fee is None
+        else 100 if budget >= fee else max(0, 100 - (fee - budget) / max(fee, 1) * 100)
+    )
     location = (profile.get("preferred_location") or "").lower()
     uni_location = ((p["university"] or {}).get("location") or "").lower()
     factors["location"] = 100 if location and location in uni_location else (50 if not location else 25)
@@ -348,9 +384,10 @@ def suitability_score(profile, programme, weights=None):
     factors["career"] = 75 if not careers else (100 if any(str(c).lower() in name for c in careers) else 60)
     total = sum(factors[k] * weights.get(k, 0) / 100 for k in factors)
     explanations = [
-        f"Academic compatibility: {factors['academic']:.1f}",
+        f"Academic compatibility: {factors['academic']:.1f}" if aggregate is not None else "Academic compatibility: unknown",
+        f"Entrance compatibility: {factors['entrance']:.1f}" if entrance_factors else "Entrance compatibility: unknown (no verified score scale or rank threshold)",
         f"Interest compatibility: {factors['interest']:.1f}",
-        f"Budget compatibility: {factors['budget']:.1f}",
+        f"Budget compatibility: {factors['budget']:.1f}" if budget is not None and fee is not None else "Budget compatibility: unknown (fee or budget not verified)",
         f"Location compatibility: {factors['location']:.1f}",
     ]
     return {"score": round(total, 1), "factors": factors, "explanation": explanations}

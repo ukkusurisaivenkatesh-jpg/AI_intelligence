@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError } from "./api";
+import { api, ApiError, currentAcademicYear } from "./api";
 
 describe("API client", () => {
   afterEach(() => {
@@ -26,5 +26,25 @@ describe("API client", () => {
 
     await expect(api.admin()).rejects.toBeInstanceOf(ApiError);
     await expect(api.admin()).rejects.toMatchObject({ status: 0 });
+  });
+
+  it("shows field validation messages without echoing submitted values", async () => {
+    vi.stubGlobal("localStorage", { getItem: () => null });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({
+        detail: [{ loc: ["body", "password"], msg: "String should have at least 12 characters", input: "sensitive-value" }],
+      }),
+      { status: 422, headers: { "Content-Type": "application/json" } },
+    )));
+
+    await expect(api.register("Student", "student@example.edu", "sensitive-value")).rejects.toMatchObject({
+      status: 422,
+      message: "Please check: password: String should have at least 12 characters",
+    });
+  });
+
+  it("uses the current Indian academic year without reusing a previous year", () => {
+    expect(currentAcademicYear(new Date(2026, 0, 15))).toBe("2025-26");
+    expect(currentAcademicYear(new Date(2026, 7, 15))).toBe("2026-27");
   });
 });

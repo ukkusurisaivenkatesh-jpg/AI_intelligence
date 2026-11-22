@@ -2,6 +2,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from .config import require_staging_database, settings
 from .models import Programme, University
 
 
@@ -379,6 +380,11 @@ PROGRAMMES = [
 
 
 def seed_catalogue(db: Session):
+    if settings.app_env == "staging":
+        require_staging_database(db.connection())
+    elif settings.app_env not in {"development", "test"}:
+        raise RuntimeError("Catalogue imports are allowed only in development, test, or verified staging")
+
     universities = {}
     now = datetime.utcnow()
     for data in UNIVERSITIES:

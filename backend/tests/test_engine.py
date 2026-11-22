@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from app.engine.frames import FrameRegistry
 from app.engine.rules import RuleEngine
-from app.services import evaluate_eligibility, rank_recommendations
+from app.services import evaluate_eligibility, rank_recommendations, suitability_score
 
 
 def programme(fee=100000, minimum=60):
@@ -169,6 +169,24 @@ def test_entrance_rank_and_additional_conditions_are_evaluated():
     assert "Applicant category" in result["satisfied"]
 
 
+def test_nested_profile_facts_support_programme_specific_conditions():
+    criteria = programme()
+    criteria["additional_admission_conditions"] = [
+        {"label": "Applicant category", "field": "profile.category", "operator": "eq", "value": "OBC-NCL"}
+    ]
+    profile = {
+        "qualification": "12th Grade",
+        "aggregate_marks": 82,
+        "subject_marks": {"Physics": 80, "Mathematics": 88},
+        "entrance_scores": {"JEE Main": 90},
+        "profile": {"category": "OBC-NCL"},
+    }
+
+    result = evaluate_eligibility(profile, criteria, "2026-27")
+    assert result["status"] == "Eligible"
+    assert "Applicant category" in result["satisfied"]
+
+
 def test_unavailable_additional_condition_is_not_assumed_satisfied():
     criteria = programme()
     criteria["additional_admission_conditions"] = [
@@ -214,6 +232,27 @@ def test_recommendations_use_matching_verified_academic_year():
     assert any("Test fixture" in item and "test-fixture" in item for item in explanations)
     assert any("fee source" in item.lower() and "test-fee-fixture" in item for item in explanations)
     assert rank_recommendations(profile, [programme()], academic_year="2027-28") == []
+
+
+def test_suitability_ranks_academic_and_verified_entrance_performance():
+    criteria = programme()
+    criteria["entrance_requirements"] = {"JEE Main": {"maximum_rank": 5000}}
+    strong = {
+        "aggregate_marks": 92,
+        "entrance_scores": {"JEE Main": {"rank": 1200}},
+        "annual_budget": None,
+    }
+    weaker = {
+        "aggregate_marks": 78,
+        "entrance_scores": {"JEE Main": {"rank": 4200}},
+        "annual_budget": None,
+    }
+
+    strong_score = suitability_score(strong, criteria)
+    weak_score = suitability_score(weaker, criteria)
+    assert strong_score["factors"]["academic"] > weak_score["factors"]["academic"]
+    assert strong_score["factors"]["entrance"] > weak_score["factors"]["entrance"]
+    assert any("unknown (fee or budget not verified)" in item for item in strong_score["explanation"])
 
 
 def test_10_diverse_profiles():

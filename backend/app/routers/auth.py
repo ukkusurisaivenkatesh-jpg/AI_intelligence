@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import User
@@ -10,18 +11,22 @@ router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
 @router.post("/register", response_model=TokenResponse)
 def register(payload: RegisterRequest, db: Session = Depends(get_db)):
-    if db.query(User).filter(User.email == payload.email.lower()).first():
+    if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(409, "Email is already registered")
-    user = User(email=payload.email.lower(), full_name=payload.full_name, password_hash=hash_password(payload.password), role="student")
+    user = User(email=payload.email, full_name=payload.full_name, password_hash=hash_password(payload.password), role="student")
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(409, "Email is already registered") from error
     db.refresh(user)
     return {"access_token": create_token(user.id), "token_type": "bearer", "role": user.role}
 
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == payload.email.lower()).first()
+    user = db.query(User).filter(User.email == payload.email).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(401, "Invalid email or password")
     return {"access_token": create_token(user.id), "token_type": "bearer", "role": user.role}

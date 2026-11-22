@@ -1,7 +1,7 @@
 # Limitations and data quality
 
-- Demo records use synthetic institution names and are labelled `demo`. They must not be represented as official admissions information.
-- No external LLM or paid API is required. The counsellor is deterministic and only returns engine-generated results.
-- Neo4j is optional for local SQLite development; graph relationships remain mirrored from PostgreSQL when Neo4j is running.
+- The initial institution and programme records are derived from official source URLs, but most admission criteria and fees remain pending verification. They must not be presented as confirmed current admissions facts.
+- Counselling is a rule-based demo, not a live AI model. Responses are limited to available profile and catalogue records and cannot answer facts that have not been verified.
+- The semantic network is derived from the current application database. Unverified admission requirements and unverified career records are not asserted as authoritative graph relationships.
 - The included suitability model is transparent and configurable in code; it is not an admission probability.
 - Salary and employment outcomes should only be added after a reliable, cited source is imported.

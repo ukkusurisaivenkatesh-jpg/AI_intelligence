@@ -1,5 +1,23 @@
 BEGIN;
 
+DO $staging_guard$
+DECLARE
+    actual_branch TEXT := current_setting('neon.branch_id', true);
+    staging_branch TEXT := current_setting('app.staging_neon_branch_id', true);
+    production_branch TEXT := current_setting('app.production_neon_branch_id', true);
+BEGIN
+    IF current_setting('app.environment', true) IS DISTINCT FROM 'staging' THEN
+        RAISE EXCEPTION 'Migration requires app.environment=staging';
+    END IF;
+    IF staging_branch IS NULL OR production_branch IS NULL THEN
+        RAISE EXCEPTION 'Migration requires explicit staging and production Neon branch IDs';
+    END IF;
+    IF actual_branch IS NULL OR actual_branch <> staging_branch OR actual_branch = production_branch THEN
+        RAISE EXCEPTION 'Connected Neon branch is not the configured staging branch';
+    END IF;
+END
+$staging_guard$;
+
 ALTER TABLE universities
     ADD COLUMN IF NOT EXISTS institution_type VARCHAR,
     ADD COLUMN IF NOT EXISTS state VARCHAR,

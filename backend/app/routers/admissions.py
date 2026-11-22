@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..auth import get_current_user
-from ..models import User, StudentProfile, Programme, Shortlist, ChatMessage
+from ..models import User, StudentProfile, Programme, Career, Shortlist, ChatMessage
+from ..counselling import build_rule_based_counselling_response
+from ..schemas import CompareRequest, CounsellorRequest, ProfileChanges
 from ..services import evaluate_eligibility, rank_recommendations, programme_dict, programme_is_verified
 from ..routers.students import profile_dict
 
@@ -10,13 +12,20 @@ router = APIRouter(prefix="/api", tags=["admissions"])
 
 
 @router.get("/programmes")
-def programmes(q: str = "", status: str = "", academic_year: str = "", db: Session = Depends(get_db)):
+def programmes(
+    q: str = Query(default="", max_length=100),
+    status: str = Query(default="", max_length=50),
+    academic_year: str = Query(default="", max_length=20),
+    db: Session = Depends(get_db),
+):
     items = [p for p in db.query(Programme).all() if programme_is_verified(p, academic_year or None)]
     result = [programme_dict(p) for p in items]
     if academic_year:
         result = [p for p in result if p["academic_year"] == academic_year]
     if q:
         result = [p for p in result if q.lower() in p["name"].lower() or q.lower() in (p["discipline"] or "").lower()]
+    if status:
+        result = [p for p in result if p["verification_status"].casefold() == status.casefold()]
     return result
 
 
@@ -29,25 +38,26 @@ def programme_detail(programme_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/eligibility/evaluate")
-def evaluate(academic_year: str = Query(default=""), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def evaluate(academic_year: str = Query(default="", max_length=20), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     profile = db.query(StudentProfile).filter(StudentProfile.user_id == user.id).first()
     data = profile_dict(profile)
     return [evaluate_eligibility(data, p, academic_year or None) for p in db.query(Programme).all()]
 
 
 @router.get("/recommendations")
-def recommendations(academic_year: str = Query(default=""), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def recommendations(academic_year: str = Query(default="", max_length=20), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     profile = db.query(StudentProfile).filter(StudentProfile.user_id == user.id).first()
     data = profile_dict(profile)
     return rank_recommendations(data, db.query(Programme).all(), academic_year=academic_year or None)
 
 
 @router.post("/what-if")
-def what_if(changes: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def what_if(payload: ProfileChanges, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     profile = db.query(StudentProfile).filter(StudentProfile.user_id == user.id).first()
     original = profile_dict(profile)
-    simulated = {**original, **{key: value for key, value in changes.items() if key != "academic_year"}}
-    academic_year = changes.get("academic_year")
+    changes = payload.model_dump(exclude_unset=True, exclude={"academic_year"})
+    simulated = {**original, **changes}
+    academic_year = payload.academic_year
     before = rank_recommendations(original, db.query(Programme).all(), academic_year=academic_year)
     after = rank_recommendations(simulated, db.query(Programme).all(), academic_year=academic_year)
     before_ids = {r["programme"]["id"] for r in before}
@@ -89,41 +99,34 @@ def shortlist(user: User = Depends(get_current_user), db: Session = Depends(get_
 
 
 @router.post("/compare")
-def compare(payload: dict, db: Session = Depends(get_db)):
-    ids = payload.get("programme_ids", [])
-    programmes = [p for p in db.query(Programme).filter(Programme.id.in_(ids)).all()] if ids else []
-    return [programme_dict(p) for p in programmes if programme_is_verified(p)]
-
+def compare(payload: CompareRequest, db: Session = Depends(get_db)):
+    programmes = db.query(Programme).filter(Programme.id.in_(payload.programme_ids)).all()
+    return [
+        programme_dict(programme)
+        for programme in programmes
+        if programme_is_verified(programme, payload.academic_year)
+    ]
 
 @router.post("/counsellor")
-def counsellor(payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    message = payload.get("message", "")
-    if not isinstance(message, str) or not message.strip():
-        raise HTTPException(422, "A non-empty message is required")
-    academic_year = payload.get("academic_year")
-    if academic_year is not None and (not isinstance(academic_year, str) or not academic_year.strip()):
-        raise HTTPException(422, "academic_year must be a non-empty year label")
+def counsellor(payload: CounsellorRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     profile = db.query(StudentProfile).filter(StudentProfile.user_id == user.id).first()
     data = profile_dict(profile)
-    recommendations = rank_recommendations(data, db.query(Programme).all(), academic_year=academic_year)
-    text = message.lower()
-    matches = [r for r in recommendations if any(word in r["programme"]["name"].lower() for word in text.split())]
-    grounded = matches[:3] or recommendations[:3]
-    missing = []
-    if data["aggregate_marks"] is None: missing.append("aggregate percentage")
-    if not data["subject_marks"]: missing.append("subject-wise marks")
-    if not data["entrance_scores"]: missing.append("entrance examination scores")
-    answer = "I used the knowledge-based eligibility engine and ranked only programmes with verified criteria."
-    if not academic_year:
-        missing.append("requested academic year")
-        answer += " No academic year was selected, so no year's criteria were applied."
-    if missing:
-        answer += " Missing information: " + ", ".join(missing) + "."
-    if grounded:
-        answer += " Grounded suggestions: " + ", ".join(r["programme"]["name"] for r in grounded) + "."
-    db.add(ChatMessage(user_id=user.id, message=message.strip(), response=answer))
+    changes = (
+        payload.profile_changes.model_dump(exclude_unset=True, exclude={"academic_year"})
+        if payload.profile_changes
+        else None
+    )
+    result = build_rule_based_counselling_response(
+        payload.message,
+        data,
+        db.query(Programme).all(),
+        db.query(Career).all(),
+        payload.academic_year,
+        changes,
+    )
+    db.add(ChatMessage(user_id=user.id, message=payload.message, response=result["answer"]))
     db.commit()
-    return {"answer": answer, "recommendations": grounded, "missing": missing, "source": "knowledge-based eligibility engine"}
+    return result
 
 
 @router.get("/counsellor/history")

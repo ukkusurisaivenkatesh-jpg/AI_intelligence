@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
@@ -16,11 +16,14 @@ def hash_password(password):
 
 
 def verify_password(password, hashed):
-    return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), hashed.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
 
 
 def create_token(user_id):
-    expire = datetime.utcnow() + timedelta(minutes=settings.access_token_expire_minutes)
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.access_token_expire_minutes)
     return jwt.encode({"sub": str(user_id), "exp": expire}, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 

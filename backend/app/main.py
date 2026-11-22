@@ -2,7 +2,11 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from .database import engine, Base
+from .config import settings
 from . import models
 from .routers import auth as auth_router, students, admissions, knowledge, careers, admin
 
@@ -12,30 +16,15 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    Base.metadata.create_all(bind=engine)
-    from sqlalchemy.orm import Session
-    from .seed import seed
-    from .catalogue import seed_catalogue
-    from .graph import KnowledgeGraph
-    db = Session(bind=engine)
-    try:
-        seed(db)
-        seed_catalogue(db)
-        graph = KnowledgeGraph()
-        try:
-            sync_result = graph.sync_catalogue(db)
-            if sync_result is None:
-                logger.warning("Neo4j catalogue synchronization skipped: %s", graph.error)
-            else:
-                logger.info(
-                    "Synchronized %s institutions and %s programmes to Neo4j",
-                    sync_result["universities"],
-                    sync_result["programmes"],
-                )
-        finally:
-            graph.close()
-    finally:
-        db.close()
+    if settings.app_env in {"development", "test"}:
+        Base.metadata.create_all(bind=engine)
+        from sqlalchemy.orm import Session
+        from .seed import seed
+        from .catalogue import seed_catalogue
+
+        with Session(bind=engine) as db:
+            seed(db)
+            seed_catalogue(db)
     yield
 
 
@@ -58,4 +47,13 @@ app.include_router(admin.router)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "AdmitWise AI"}
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except SQLAlchemyError:
+        logger.error("Database health check failed")
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unavailable", "service": "AdmitWise AI", "database": "unavailable"},
+        )
+    return {"status": "ok", "service": "AdmitWise AI", "database": "available"}

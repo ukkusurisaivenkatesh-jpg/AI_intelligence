@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..auth import get_current_user
-from ..models import Rule
+from ..models import Rule, User
 from ..engine.reasoning import KnowledgeReasoner
-from ..graph import KnowledgeGraph
+from ..semantic_network import build_semantic_network
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -34,8 +34,9 @@ def backward(payload: dict, db: Session = Depends(get_db)):
 
 
 @router.get("/graph")
-def graph():
-    graph = KnowledgeGraph()
-    result = graph.explorer()
-    graph.close()
-    return result
+def graph(
+    academic_year: str = Query(default="", max_length=20),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return build_semantic_network(db, user, academic_year or None)
