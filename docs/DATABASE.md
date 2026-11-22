@@ -10,6 +10,9 @@ Main tables:
 - `rules`: versionable structured inference rules
 - `careers`: career guidance and roadmaps
 - `shortlists`: student saved programmes
+- `chat_messages`: persisted counselling questions and grounded responses
 - `audit_logs`: administrative changes
 
-Neo4j mirrors universities, programmes and semantic relationships. It is optional at runtime and the API reports a connection message if unavailable.
+The application creates missing tables at startup. Existing records are preserved.
+
+Neo4j is optional. Its current programme sync helper is not automatically invoked, so the graph page uses a relationship preview built from authenticated profile data and the SQL-backed programme and career APIs when Neo4j is unavailable. The UI identifies this fallback explicitly.

@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models import User
 from ..schemas import RegisterRequest, LoginRequest, TokenResponse
-from ..auth import hash_password, verify_password, create_token
+from ..auth import get_current_user, hash_password, verify_password, create_token
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
@@ -25,3 +25,8 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(401, "Invalid email or password")
     return {"access_token": create_token(user.id), "token_type": "bearer", "role": user.role}
+
+
+@router.get("/me")
+def current_user(user: User = Depends(get_current_user)):
+    return {"id": user.id, "email": user.email, "full_name": user.full_name, "role": user.role}

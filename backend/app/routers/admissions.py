@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from ..database import get_db
 from ..auth import get_current_user
-from ..models import User, StudentProfile, Programme, Shortlist
+from ..models import User, StudentProfile, Programme, Shortlist, ChatMessage
 from ..services import evaluate_eligibility, rank_recommendations, programme_dict
 from ..routers.students import profile_dict
 
@@ -95,6 +95,8 @@ def compare(payload: dict, db: Session = Depends(get_db)):
 @router.post("/counsellor")
 def counsellor(payload: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     message = payload.get("message", "")
+    if not isinstance(message, str) or not message.strip():
+        raise HTTPException(422, "A non-empty message is required")
     profile = db.query(StudentProfile).filter(StudentProfile.user_id == user.id).first()
     data = profile_dict(profile)
     recommendations = rank_recommendations(data, db.query(Programme).all())
@@ -110,4 +112,15 @@ def counsellor(payload: dict, user: User = Depends(get_current_user), db: Sessio
         answer += " Missing information: " + ", ".join(missing) + "."
     if grounded:
         answer += " Grounded suggestions: " + ", ".join(r["programme"]["name"] for r in grounded) + "."
-    return {"answer": answer, "recommendations": grounded, "missing": missing, "source": "deterministic fallback"}
+    db.add(ChatMessage(user_id=user.id, message=message.strip(), response=answer))
+    db.commit()
+    return {"answer": answer, "recommendations": grounded, "missing": missing, "source": "knowledge-based eligibility engine"}
+
+
+@router.get("/counsellor/history")
+def counsellor_history(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    messages = db.query(ChatMessage).filter(ChatMessage.user_id == user.id).order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc()).limit(50).all()
+    return [
+        {"id": item.id, "message": item.message, "response": item.response, "created_at": item.created_at.isoformat()}
+        for item in reversed(messages)
+    ]

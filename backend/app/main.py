@@ -1,7 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .config import settings
 from .database import engine, Base
 from . import models
 from .routers import auth as auth_router, students, admissions, knowledge, careers, admin
@@ -21,11 +20,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AdmitWise AI", version="1.0.0", lifespan=lifespan)
-cors_origins = [x.strip() for x in settings.cors_origins.split(",")]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if "*" in cors_origins else cors_origins,
-    allow_credentials=False if "*" in cors_origins else True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -38,6 +38,27 @@ def test_health_and_programmes():
     assert len(client.get("/api/programmes").json()) >= 5
 
 
+def test_cors_preflight_allows_frontend_requests():
+    response = client.options(
+        "/api/auth/login",
+        headers={
+            "Origin": "https://ai-intelligence-eta.vercel.app",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,authorization",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"
+
+
+def test_knowledge_graph_reports_service_status():
+    response = client.get("/api/knowledge/graph")
+    assert response.status_code == 200
+    assert isinstance(response.json()["available"], bool)
+    if not response.json()["available"]:
+        assert response.json()["message"]
+
+
 def test_profile_update_and_dashboard():
     headers = auth_headers()
     response = client.put("/api/students/me/profile", headers=headers, json={"qualification": "12th Grade", "aggregate_marks": 82, "subject_marks": {"Mathematics": 88}, "entrance_scores": {"JEE Main": 92}, "interests": ["Technology"], "aptitude": {"logical": 8}, "skills": ["Python"], "preferred_location": "Maharashtra", "annual_budget": 150000})
@@ -71,3 +92,30 @@ def test_admin_role_restricted():
     response = client.post("/api/auth/login", json={"email": "student@admitwise.demo", "password": "Student123!"})
     headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
     assert client.get("/api/admin/overview", headers=headers).status_code == 403
+
+
+def test_current_user_and_counsellor_history():
+    headers = auth_headers()
+    current_user = client.get("/api/auth/me", headers=headers)
+    assert current_user.status_code == 200
+    assert current_user.json()["role"] == "student"
+
+    question = "Which programme criteria should I review?"
+    response = client.post("/api/counsellor", headers=headers, json={"message": question})
+    assert response.status_code == 200
+    history = client.get("/api/counsellor/history", headers=headers)
+    assert history.status_code == 200
+    assert any(item["message"] == question and item["response"] == response.json()["answer"] for item in history.json())
+
+
+def test_admin_identity_and_permissions():
+    response = client.post("/api/auth/login", json={"email": "admin@admitwise.demo", "password": "Admin123!"})
+    assert response.status_code == 200
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
+    assert client.get("/api/auth/me", headers=headers).json()["role"] == "admin"
+    assert client.get("/api/admin/overview", headers=headers).status_code == 200
+
+
+def test_counsellor_rejects_empty_message():
+    response = client.post("/api/counsellor", headers=auth_headers(), json={"message": "  "})
+    assert response.status_code == 422

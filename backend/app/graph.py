@@ -1,15 +1,22 @@
 from neo4j import GraphDatabase
+from neo4j.exceptions import DriverError, Neo4jError
 from .config import settings
 
 
 class KnowledgeGraph:
     def __init__(self):
         self.driver = None
+        self.error = None
+        driver = None
         try:
-            self.driver = GraphDatabase.driver(settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password))
-            self.driver.verify_connectivity()
-        except Exception:
+            driver = GraphDatabase.driver(settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password))
+            driver.verify_connectivity()
+            self.driver = driver
+        except (DriverError, Neo4jError, OSError):
+            if driver:
+                driver.close()
             self.driver = None
+            self.error = "Neo4j is unavailable or authentication failed. Verify the configured URI, credentials, and network access."
 
     def close(self):
         if self.driver:
@@ -30,7 +37,7 @@ class KnowledgeGraph:
 
     def explorer(self, limit=100):
         if not self.driver:
-            return {"available": False, "nodes": [], "edges": [], "message": "Neo4j is not connected; start the Docker Neo4j service."}
+            return {"available": False, "nodes": [], "edges": [], "message": self.error or "Neo4j is not connected; configure a reachable Neo4j URI."}
         with self.driver.session() as session:
             records = session.run("""
             MATCH (a)-[r]->(b)
