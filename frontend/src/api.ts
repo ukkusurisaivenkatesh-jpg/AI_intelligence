@@ -1,4 +1,4 @@
-const BASE = "/api";
+const BASE = `${(import.meta.env.VITE_API_URL || "").replace(/\/$/, "")}/api`;
 export function token(): string | null { return localStorage.getItem("admitwise_token"); }
 async function request(path: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers || {});
