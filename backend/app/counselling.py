@@ -5,6 +5,7 @@ from .services import (
     evaluate_eligibility,
     fee_is_verified,
     programme_is_verified,
+    recommendation_reasons,
     rank_recommendations,
 )
 
@@ -47,17 +48,18 @@ def _missing(profile: dict, academic_year: str | None) -> list[str]:
     return result
 
 
-def _recommendation_text(recommendations: list[dict]) -> str:
+def _recommendation_text(
+    recommendations: list[dict], profile: dict, academic_year: str | None
+) -> str:
     entries = []
     for item in recommendations[:3]:
         programme = item["programme"]
         affordability = item["affordability"]
         details = [
             f"{_title(item)}: {item['status']}",
-            f"suitability {item['suitability']['score']}% (not admission probability)",
-            *item["suitability"]["explanation"][:3],
             f"affordability {affordability['status']}",
         ]
+        details.extend(recommendation_reasons(profile, programme, academic_year))
         if affordability["annual_fee"] is not None:
             details.append(
                 f"verified annual tuition ₹{affordability['annual_fee']:,.0f} "
@@ -147,7 +149,9 @@ def build_rule_based_counselling_response(
             ]
             answer += " No longer eligible: " + "; ".join(names) + "."
         if recommendations:
-            answer += " Eligible options after the change: " + _recommendation_text(recommendations)
+            answer += " Eligible options after the change: " + _recommendation_text(
+                recommendations, scenario, academic_year
+            )
         verified_fees = [
             item for item in records
             if item["affordability"]["annual_fee"] is not None
@@ -205,14 +209,16 @@ def build_rule_based_counselling_response(
         else:
             answer += " Affordability is unknown because no verified same-year fee is recorded."
         if result["programme"].get("source_url"):
-            answer += f" Catalogue source: {result['programme']['source_url']}."
+            source_title = result["programme"].get("source_title")
+            source = source_title or result["programme"]["source_url"]
+            answer += f" Catalogue source: {source} ({result['programme']['source_url']})."
         recommendation = recommendation_by_id.get(_value(matched_programme, "id"))
         if recommendation:
-            answer += (
-                " Suitability explanation (not an admission probability): "
-                + "; ".join(recommendation["suitability"]["explanation"])
-                + "."
+            reasons = recommendation_reasons(
+                scenario, recommendation["programme"], academic_year
             )
+            if reasons:
+                answer += " Profile match: " + "; ".join(reasons) + "."
     elif any(term in text for term in ("career", "pathway", "job", "profession")):
         skill_terms = {
             value.casefold()
@@ -225,8 +231,12 @@ def build_rule_based_counselling_response(
         if not isinstance(goals, list):
             goals = []
         goal_terms = {goal.casefold() for goal in goals if isinstance(goal, str)}
-        verified_careers = [career for career in careers if career_is_verified(career)]
-        verified_careers.sort(
+        available_careers = [
+            career
+            for career in careers
+            if career_is_verified(career) or _value(career, "illustrative") is True
+        ]
+        available_careers.sort(
             key=lambda career: sum(
                 skill.casefold() in skill_terms
                 for skill in (_value(career, "technical_skills") or [])
@@ -238,9 +248,9 @@ def build_rule_based_counselling_response(
             ),
             reverse=True,
         )
-        if verified_careers:
+        if available_careers:
             entries = []
-            for career in verified_careers[:3]:
+            for career in available_careers[:3]:
                 skills = (_value(career, "technical_skills") or []) + (
                     _value(career, "soft_skills") or []
                 )
@@ -257,8 +267,12 @@ def build_rule_based_counselling_response(
                         f"; source ({_value(career, 'academic_year')}): "
                         f"{_value(career, 'source_url')}"
                     )
+                if _value(career, "illustrative") is True:
+                    detail = "illustrative, locally maintained pathway; " + detail
                 entries.append(f"{_value(career, 'name')} - {detail}.")
-            answer = "Source-verified career pathways: " + " ".join(entries)
+            answer = "Career pathways to explore: " + " ".join(entries)
+            if any(_value(career, "illustrative") is True for career in available_careers):
+                answer += " Illustrative pathways are not job guarantees or verified labour-market claims."
         else:
             answer = (
                 "No source-verified career pathways are currently available in the "
@@ -312,7 +326,8 @@ def build_rule_based_counselling_response(
         if candidates:
             answer = (
                 f"Based on your profile and verified {academic_year or 'current-year'} "
-                "criteria, eligible options are: " + _recommendation_text(candidates)
+                "criteria, eligible options are: "
+                + _recommendation_text(candidates, scenario, academic_year)
             )
         else:
             pending_count = sum(

@@ -49,10 +49,33 @@ def auth_headers():
 
 def test_health_and_programmes():
     assert client.get("/api/health").json()["status"] == "ok"
-    programmes = client.get("/api/programmes").json()
-    assert programmes == []
-    assert client.get("/api/programmes/1").status_code == 404
-    assert client.get("/api/careers").json() == []
+    catalogue = client.get("/api/programmes").json()
+    assert catalogue["total"] == len(PROGRAMMES) + 1
+    assert catalogue["items"]
+    assert any(item["criteria_status"] == "PENDING_VERIFICATION" for item in catalogue["items"])
+    assert client.get(f"/api/programmes/{catalogue['items'][0]['id']}").status_code == 200
+    careers = client.get("/api/careers").json()
+    assert careers
+    assert all(career["illustrative"] for career in careers)
+
+
+def test_catalogue_search_filters_include_unknown_year_records():
+    response = client.get("/api/programmes?academic_year=2026-27&q=Pune&limit=10")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["university"]["name"] == "Test Fixture University"
+    assert payload["items"][0]["academic_year"] is None
+
+
+def test_pending_programme_catalogue_fields_are_not_exposed_as_verified():
+    payload = client.get("/api/programmes?limit=100").json()
+    pending = next(item for item in payload["items"] if item["criteria_status"] == "PENDING_VERIFICATION")
+    assert pending["minimum_percentage"] is None
+    assert pending["required_subjects"] == []
+    assert pending["annual_fee"] is None
+    assert pending["source_url"]
+    assert pending["source_title"]
 
 
 def test_health_failure_does_not_expose_database_error(monkeypatch):
@@ -154,10 +177,32 @@ def test_profile_update_and_dashboard():
 def test_recommendations_eligibility_and_what_if():
     headers = auth_headers()
     assert client.post("/api/eligibility/evaluate", headers=headers).status_code == 200
-    assert client.get("/api/recommendations", headers=headers).status_code == 200
+    response = client.get("/api/recommendations?academic_year=2026-27", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["verified_recommendations"] == []
+    assert response.json()["explore_suggestions"]
+    assert all(
+        item["eligibility_status"] != "Eligible"
+        for item in response.json()["explore_suggestions"]
+    )
     response = client.post("/api/what-if", headers=headers, json={"aggregate_marks": 95, "annual_budget": 300000})
     assert response.status_code == 200
     assert "simulated" in response.json()
+
+
+def test_comparison_includes_pending_programmes_and_eligibility_status():
+    with TestingSession() as db:
+        programme_ids = [item.id for item in db.query(Programme).limit(2).all()]
+    response = client.post(
+        "/api/compare",
+        headers=auth_headers(),
+        json={"programme_ids": programme_ids, "academic_year": "2026-27"},
+    )
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+    assert all(item["criteria_status"] == "PENDING_VERIFICATION" for item in response.json())
+    assert all(item["eligibility_status"] == "Insufficient Information" for item in response.json())
+    assert all(item["annual_fee"] is None for item in response.json())
 
 
 def test_shortlist():

@@ -1,17 +1,6 @@
 from copy import deepcopy
 
 
-DEFAULT_WEIGHTS = {
-    "academic": 25,
-    "entrance": 10,
-    "interest": 20,
-    "aptitude": 15,
-    "budget": 15,
-    "location": 10,
-    "career": 5,
-}
-
-
 def _read(item, key, default=None):
     return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
 
@@ -54,9 +43,24 @@ def career_is_verified(career):
     return has_verification_provenance(career)
 
 
-def programme_dict(p, include_unverified=False):
-    criteria_verified = programme_is_verified(p)
-    verified_fee = fee_is_verified(p)
+def _iso(value):
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def programme_dict(p, include_unverified=False, academic_year=None):
+    criteria_verified = programme_is_verified(p, academic_year)
+    verified_fee = fee_is_verified(p, academic_year)
+    stored_status = _read(p, "verification_status", "PENDING_VERIFICATION")
+    if stored_status == "EXPIRED":
+        criteria_status = "EXPIRED"
+    elif academic_year and _read(p, "academic_year") and _read(p, "academic_year") != academic_year:
+        criteria_status = "NOT_CURRENT_FOR_YEAR"
+    elif criteria_verified:
+        criteria_status = "VERIFIED"
+    elif stored_status == "UNAVAILABLE":
+        criteria_status = "UNAVAILABLE"
+    else:
+        criteria_status = "PENDING_VERIFICATION"
     verification_fields = (
         "degree_type", "specialization", "duration_text", "minimum_qualification",
         "additional_admission_conditions", "admission_route", "counselling_authority",
@@ -78,47 +82,52 @@ def programme_dict(p, include_unverified=False):
             "counselling_authority": None,
         })
     for key in ("verified_at", "last_updated", "fee_verified_at", "fee_last_updated"):
-        if metadata[key] is not None:
-            metadata[key] = metadata[key].isoformat()
+        metadata[key] = _iso(metadata[key])
+    university = _read(p, "university")
     return {
-        "id": p.id,
-        "name": p.name,
-        "discipline": p.discipline,
-        "duration_years": p.duration_years,
-        "annual_fee": p.annual_fee if include_unverified or verified_fee else None,
-        "minimum_percentage": p.minimum_percentage if include_unverified or criteria_verified else None,
-        "required_subjects": (p.required_subjects or []) if include_unverified or criteria_verified else [],
-        "subject_minimums": (p.subject_minimums or {}) if include_unverified or criteria_verified else {},
-        "entrance_exams": (p.entrance_exams or []) if include_unverified or criteria_verified else [],
-        "entrance_requirements": (p.entrance_requirements or {}) if include_unverified or criteria_verified else {},
-        "career_ids": p.career_ids or [],
-        "data_status": p.data_status,
-        "source": p.source,
-        "last_verified": p.last_verified.isoformat() if p.last_verified else None,
+        "id": _read(p, "id"),
+        "name": _read(p, "name"),
+        "discipline": _read(p, "discipline"),
+        "duration_years": _read(p, "duration_years"),
+        "annual_fee": _read(p, "annual_fee") if include_unverified or verified_fee else None,
+        "minimum_percentage": _read(p, "minimum_percentage") if include_unverified or criteria_verified else None,
+        "required_subjects": (_read(p, "required_subjects") or []) if include_unverified or criteria_verified else [],
+        "subject_minimums": (_read(p, "subject_minimums") or {}) if include_unverified or criteria_verified else {},
+        "entrance_exams": (_read(p, "entrance_exams") or []) if include_unverified or criteria_verified else [],
+        "entrance_requirements": (_read(p, "entrance_requirements") or {}) if include_unverified or criteria_verified else {},
+        "career_ids": _read(p, "career_ids") or [],
+        "data_status": _read(p, "data_status"),
+        "source": _read(p, "source"),
+        "last_verified": _iso(_read(p, "last_verified")),
+        "criteria_status": criteria_status,
         **metadata,
         "university": {
-            "id": p.university.id,
-            "name": p.university.name,
-            "location": p.university.location,
-            "region": p.university.region,
-            "institution_type": getattr(p.university, "institution_type", None),
-            "state": getattr(p.university, "state", None),
-            "city": getattr(p.university, "city", None),
-            "website": p.university.website,
-            "recognition_info": getattr(p.university, "recognition_info", None),
-            "source_url": getattr(p.university, "source_url", None),
-            "source_title": getattr(p.university, "source_title", None),
-            "verification_status": getattr(p.university, "verification_status", "PENDING_VERIFICATION"),
-            "verified_at": getattr(p.university, "verified_at", None).isoformat() if getattr(p.university, "verified_at", None) else None,
-            "academic_year": getattr(p.university, "academic_year", None),
-            "last_updated": getattr(p.university, "last_updated", None).isoformat() if getattr(p.university, "last_updated", None) else None,
-            "data_notes": getattr(p.university, "data_notes", None),
-        } if p.university else None,
+            "id": _read(university, "id"),
+            "name": _read(university, "name"),
+            "location": _read(university, "location"),
+            "region": _read(university, "region"),
+            "institution_type": _read(university, "institution_type"),
+            "state": _read(university, "state"),
+            "city": _read(university, "city"),
+            "website": _read(university, "website"),
+            "recognition_info": _read(university, "recognition_info"),
+            "source_url": _read(university, "source_url"),
+            "source_title": _read(university, "source_title"),
+            "verification_status": _read(university, "verification_status", "PENDING_VERIFICATION"),
+            "verified_at": _iso(_read(university, "verified_at")),
+            "academic_year": _read(university, "academic_year"),
+            "last_updated": _iso(_read(university, "last_updated")),
+            "data_notes": _read(university, "data_notes"),
+        } if university else None,
     }
 
 
 def evaluate_eligibility(profile, programme, academic_year=None):
-    p = programme_dict(programme) if hasattr(programme, "id") else deepcopy(programme)
+    p = (
+        programme_dict(programme, academic_year=academic_year)
+        if hasattr(programme, "id")
+        else deepcopy(programme)
+    )
     trace = []
     satisfied = []
     unsatisfied = []
@@ -327,87 +336,93 @@ def evaluate_eligibility(profile, programme, academic_year=None):
     }
 
 
-def suitability_score(profile, programme, weights=None):
-    weights = weights or DEFAULT_WEIGHTS
-    p = programme_dict(programme) if hasattr(programme, "id") else deepcopy(programme)
-    factors = {}
-    aggregate = profile.get("aggregate_marks")
-    factors["academic"] = round(float(aggregate), 1) if aggregate is not None else 50
-
-    entrance_factors = []
-    entrance_scores = profile.get("entrance_scores") or {}
-    for exam in p.get("entrance_exams") or []:
-        requirement = (p.get("entrance_requirements") or {}).get(exam, {})
-        if not isinstance(requirement, dict):
-            continue
-        result = entrance_scores.get(exam)
-        if result is None:
-            continue
-        score = result.get("score") if isinstance(result, dict) else result
-        rank = result.get("rank") if isinstance(result, dict) else None
-        minimum_score = requirement.get("minimum_score")
-        maximum_score = requirement.get("maximum_score")
-        maximum_rank = requirement.get("maximum_rank")
-        if (
-            score is not None
-            and minimum_score is not None
-            and maximum_score is not None
-            and maximum_score > minimum_score
-        ):
-            entrance_factors.append(
-                max(0, min(100, 100 * (score - minimum_score) / (maximum_score - minimum_score)))
-            )
-        elif rank is not None and maximum_rank is not None and maximum_rank > 0:
-            entrance_factors.append(max(0, min(100, 100 * (maximum_rank - rank) / maximum_rank)))
-        elif score is not None and minimum_score is not None:
-            entrance_factors.append(50)
-    factors["entrance"] = round(sum(entrance_factors) / len(entrance_factors), 1) if entrance_factors else 50
-    interests = set(profile.get("interests") or [])
-    discipline = (p["discipline"] or "").lower()
-    name = (p["name"] or "").lower()
-    matched = sum(1 for interest in interests if interest.lower() in name or interest.lower() in discipline)
-    factors["interest"] = min(100, 50 + matched * 25)
-    aptitude = profile.get("aptitude") or {}
-    factors["aptitude"] = round(sum(float(v) for v in aptitude.values()) / max(1, len(aptitude)) * 10, 1) if aptitude else 50
-    budget = profile.get("annual_budget")
-    fee_verified = bool(p.get("academic_year")) and fee_is_verified(p, p.get("academic_year"))
-    fee = p["annual_fee"] if fee_verified else None
-    factors["budget"] = (
-        50
-        if budget is None or fee is None
-        else 100 if budget >= fee else max(0, 100 - (fee - budget) / max(fee, 1) * 100)
-    )
-    location = (profile.get("preferred_location") or "").lower()
-    uni_location = ((p["university"] or {}).get("location") or "").lower()
-    factors["location"] = 100 if location and location in uni_location else (50 if not location else 25)
-    careers = profile.get("career_interests") or []
-    factors["career"] = 75 if not careers else (100 if any(str(c).lower() in name for c in careers) else 60)
-    total = sum(factors[k] * weights.get(k, 0) / 100 for k in factors)
-    explanations = [
-        f"Academic compatibility: {factors['academic']:.1f}" if aggregate is not None else "Academic compatibility: unknown",
-        f"Entrance compatibility: {factors['entrance']:.1f}" if entrance_factors else "Entrance compatibility: unknown (no verified score scale or rank threshold)",
-        f"Interest compatibility: {factors['interest']:.1f}",
-        f"Budget compatibility: {factors['budget']:.1f}" if budget is not None and fee is not None else "Budget compatibility: unknown (fee or budget not verified)",
-        f"Location compatibility: {factors['location']:.1f}",
+def _catalogue_text_match(values, *targets):
+    targets = [str(target or "").casefold() for target in targets]
+    return [
+        str(value).strip()
+        for value in values
+        if str(value).strip()
+        and any(str(value).strip().casefold() in target for target in targets)
     ]
-    return {"score": round(total, 1), "factors": factors, "explanation": explanations}
 
 
-def rank_recommendations(profile, programmes, weights=None, academic_year=None):
-    results = []
+def recommendation_reasons(profile, programme, academic_year=None):
+    name = _read(programme, "name", "") or ""
+    discipline = _read(programme, "discipline", "") or ""
+    university = _read(programme, "university")
+    location = " ".join(
+        str(_read(university, field, "") or "")
+        for field in ("location", "city", "state", "region")
+    )
+    targets = (name, discipline)
+    reasons = []
+    interests = _catalogue_text_match(profile.get("interests") or [], *targets)
+    if interests:
+        reasons.append("Interest aligns with the programme listing: " + ", ".join(interests))
+    skills = _catalogue_text_match(profile.get("skills") or [], *targets)
+    if skills:
+        reasons.append("A saved skill aligns with the programme listing: " + ", ".join(skills))
+    subjects = _catalogue_text_match(
+        (profile.get("subject_marks") or {}).keys(), *targets
+    )
+    if subjects:
+        reasons.append("A studied subject aligns with the programme listing: " + ", ".join(subjects))
+    goals = profile.get("profile") or {}
+    career_goals = goals.get("career_goals", goals.get("career_goal", []))
+    if isinstance(career_goals, str):
+        career_goals = [career_goals]
+    if isinstance(career_goals, list):
+        matched_goals = _catalogue_text_match(career_goals, *targets)
+        if matched_goals:
+            reasons.append("A saved career goal aligns with the programme listing: " + ", ".join(matched_goals))
+    preferred_location = profile.get("preferred_location")
+    if preferred_location and preferred_location.casefold() in location.casefold():
+        reasons.append(f"Catalogue location matches your preference: {preferred_location}")
+    if not reasons:
+        return []
+    return reasons
+
+
+def build_recommendation_categories(profile, programmes, academic_year=None):
+    verified = []
+    suggestions = []
     for programme in programmes:
-        eligibility = evaluate_eligibility(profile, programme, academic_year)
-        if eligibility["status"] == "Eligible":
-            suitability = suitability_score(profile, programme, weights)
-            suitability["explanation"].append(
-                f"Admission criteria source ({eligibility['academic_year']}): "
-                f"{eligibility['programme']['source_title']} - {eligibility['programme']['source_url']}"
+        evaluation = evaluate_eligibility(profile, programme, academic_year)
+        reasons = recommendation_reasons(profile, programme, academic_year)
+        catalogue_record = programme_dict(programme, academic_year=academic_year)
+        if evaluation["status"] == "Eligible":
+            verified.append(
+                {
+                    **evaluation,
+                    "relevance_reasons": reasons
+                    or ["Meets all complete, verified admission criteria for the selected year."],
+                }
             )
-            if eligibility["affordability"]["status"] != "unknown":
-                suitability["explanation"].append(
-                    f"Fee source ({eligibility['affordability']['academic_year']}): "
-                    f"{eligibility['programme']['fee_source_title']} - "
-                    f"{eligibility['programme']['fee_source_url']}"
-                )
-            results.append({**eligibility, "suitability": suitability})
-    return sorted(results, key=lambda r: r["suitability"]["score"], reverse=True)
+        elif reasons:
+            suggestions.append(
+                {
+                    "programme": catalogue_record,
+                    "eligibility_status": evaluation["status"],
+                    "affordability": evaluation["affordability"],
+                    "missing": evaluation["missing"],
+                    "unsatisfied": evaluation["unsatisfied"],
+                    "relevance_reasons": reasons,
+                }
+            )
+    verified.sort(key=lambda item: (-len(item["relevance_reasons"]), item["programme"]["name"].casefold()))
+    suggestions.sort(
+        key=lambda item: (
+            -len(item["relevance_reasons"]),
+            item["programme"]["name"].casefold(),
+        )
+    )
+    return {
+        "verified_recommendations": verified,
+        "explore_suggestions": suggestions,
+    }
+
+
+def rank_recommendations(profile, programmes, academic_year=None):
+    return build_recommendation_categories(profile, programmes, academic_year)[
+        "verified_recommendations"
+    ]

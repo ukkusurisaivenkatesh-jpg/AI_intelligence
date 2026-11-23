@@ -1,11 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from ..database import get_db
 from ..auth import get_current_user
+from ..career_catalogue import ILLUSTRATIVE_CAREERS
 from ..models import User, StudentProfile, Programme, Career, Shortlist, ChatMessage
 from ..counselling import build_rule_based_counselling_response
 from ..schemas import CompareRequest, CounsellorRequest, ProfileChanges
-from ..services import evaluate_eligibility, rank_recommendations, programme_dict, programme_is_verified
+from ..services import (
+    build_recommendation_categories,
+    evaluate_eligibility,
+    programme_dict,
+    rank_recommendations,
+)
 from ..routers.students import profile_dict
 
 router = APIRouter(prefix="/api", tags=["admissions"])
@@ -16,23 +22,76 @@ def programmes(
     q: str = Query(default="", max_length=100),
     status: str = Query(default="", max_length=50),
     academic_year: str = Query(default="", max_length=20),
+    institution: str = Query(default="", max_length=100),
+    location: str = Query(default="", max_length=100),
+    category: str = Query(default="", max_length=100),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
-    items = [p for p in db.query(Programme).all() if programme_is_verified(p, academic_year or None)]
-    result = [programme_dict(p) for p in items]
-    if academic_year:
-        result = [p for p in result if p["academic_year"] == academic_year]
-    if q:
-        result = [p for p in result if q.lower() in p["name"].lower() or q.lower() in (p["discipline"] or "").lower()]
-    if status:
-        result = [p for p in result if p["verification_status"].casefold() == status.casefold()]
-    return result
+    requested_year = academic_year or None
+    items = db.query(Programme).options(joinedload(Programme.university)).all()
+    result = []
+    for programme in items:
+        if requested_year and programme.academic_year not in (None, requested_year):
+            continue
+        record = programme_dict(programme, academic_year=requested_year)
+        university = programme.university
+        search_text = " ".join(
+            str(value or "")
+            for value in (
+                record["name"],
+                record["discipline"],
+                (record["university"] or {}).get("name"),
+                (record["university"] or {}).get("location"),
+                (record["university"] or {}).get("city"),
+                (record["university"] or {}).get("state"),
+                *record["required_subjects"],
+            )
+        ).casefold()
+        institution_text = " ".join(
+            str(value or "")
+            for value in (
+                university.name if university else "",
+                university.location if university else "",
+            )
+        ).casefold()
+        location_text = " ".join(
+            str(value or "")
+            for value in (
+                university.location if university else "",
+                university.city if university else "",
+                university.state if university else "",
+                university.region if university else "",
+            )
+        ).casefold()
+        if q and q.casefold() not in search_text:
+            continue
+        if institution and institution.casefold() not in institution_text:
+            continue
+        if location and location.casefold() not in location_text:
+            continue
+        if category and category.casefold() not in (record["discipline"] or "").casefold():
+            continue
+        if status and status.casefold() not in {
+            str(record["criteria_status"]).casefold(),
+            str(record["verification_status"]).casefold(),
+        }:
+            continue
+        result.append(record)
+    result.sort(key=lambda item: (item["name"].casefold(), item["id"]))
+    return {
+        "items": result[offset : offset + limit],
+        "total": len(result),
+        "offset": offset,
+        "limit": limit,
+    }
 
 
 @router.get("/programmes/{programme_id}")
 def programme_detail(programme_id: int, db: Session = Depends(get_db)):
     p = db.get(Programme, programme_id)
-    if not p or not programme_is_verified(p):
+    if not p:
         raise HTTPException(404, "Programme not found")
     return programme_dict(p)
 
@@ -48,7 +107,8 @@ def evaluate(academic_year: str = Query(default="", max_length=20), user: User =
 def recommendations(academic_year: str = Query(default="", max_length=20), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     profile = db.query(StudentProfile).filter(StudentProfile.user_id == user.id).first()
     data = profile_dict(profile)
-    return rank_recommendations(data, db.query(Programme).all(), academic_year=academic_year or None)
+    programmes = db.query(Programme).options(joinedload(Programme.university)).all()
+    return build_recommendation_categories(data, programmes, academic_year=academic_year or None)
 
 
 @router.post("/what-if")
@@ -99,13 +159,36 @@ def shortlist(user: User = Depends(get_current_user), db: Session = Depends(get_
 
 
 @router.post("/compare")
-def compare(payload: CompareRequest, db: Session = Depends(get_db)):
+def compare(
+    payload: CompareRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     programmes = db.query(Programme).filter(Programme.id.in_(payload.programme_ids)).all()
-    return [
-        programme_dict(programme)
-        for programme in programmes
-        if programme_is_verified(programme, payload.academic_year)
-    ]
+    profile = db.query(StudentProfile).filter(StudentProfile.user_id == user.id).first()
+    profile_data = profile_dict(profile)
+    if len(programmes) != len(payload.programme_ids):
+        raise HTTPException(404, "One or more selected catalogue programmes are unavailable")
+    careers_by_id = {
+        career.id: career
+        for career in db.query(Career).all()
+    }
+    result = []
+    for programme in programmes:
+        evaluation = evaluate_eligibility(profile_data, programme, payload.academic_year)
+        record = programme_dict(programme, academic_year=payload.academic_year)
+        record["eligibility_status"] = evaluation["status"]
+        record["eligibility_missing"] = evaluation["missing"]
+        record["career_pathways"] = [
+            {
+                "name": careers_by_id[career_id].name,
+                "verification_status": careers_by_id[career_id].verification_status,
+            }
+            for career_id in programme.career_ids or []
+            if career_id in careers_by_id
+        ]
+        result.append(record)
+    return result
 
 @router.post("/counsellor")
 def counsellor(payload: CounsellorRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -120,7 +203,7 @@ def counsellor(payload: CounsellorRequest, user: User = Depends(get_current_user
         payload.message,
         data,
         db.query(Programme).all(),
-        db.query(Career).all(),
+        db.query(Career).all() + ILLUSTRATIVE_CAREERS,
         payload.academic_year,
         changes,
     )

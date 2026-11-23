@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
-import ReactFlow, { Background, BaseEdge, Controls, EdgeLabelRenderer, getBezierPath, Handle, Position, type EdgeProps, type NodeProps } from "reactflow";
+import ReactFlow, { Background, BaseEdge, Controls, EdgeLabelRenderer, getBezierPath, Handle, Position, ReactFlowProvider, useReactFlow, type Edge, type EdgeProps, type Node, type NodeProps } from "reactflow";
 import "reactflow/dist/style.css";
 import {
   ArrowDownRight, ArrowRight, Award, BookOpen, Bookmark, BriefcaseBusiness, Check,
@@ -7,7 +7,8 @@ import {
   LoaderCircle, LogOut, Menu, MessageCircle, Moon, Network, Search, ShieldCheck,
   SlidersHorizontal, Sparkles, Sun, UserRound, Users, X,
 } from "lucide-react";
-import { api, currentAcademicYear, token, type Career, type ChatHistoryItem, type EligibilityResult, type Profile, type Programme, type Recommendation, type User } from "./api";
+import { api, currentAcademicYear, token, type Career, type ChatHistoryItem, type EligibilityResult, type ExploreSuggestion, type Profile, type Programme, type ProgrammeComparison, type Recommendation, type User } from "./api";
+import { buildDemoSemanticNetwork, demoProgrammesForCareer, DEMO_PROGRAMMES, filterDemoProgrammes, rankDemoProgrammes, selectDemoProgrammes, semanticNetworkWithDemo, type DemoProgramme } from "./demoCatalogue";
 
 type View = "dashboard" | "profile" | "explore" | "eligibility" | "recommendations" | "what-if" | "careers" | "compare" | "graph" | "chat" | "saved" | "admin";
 type NavigationItem = { id: View; label: string; icon: typeof Home };
@@ -87,7 +88,7 @@ function Badge({ children, tone = "neutral" }: { children: ReactNode; tone?: "ne
   return <span className={`badge badge-${tone}`}>{children}</span>;
 }
 
-function Login({ onLogin }: { onLogin: (user: User) => void }) {
+function Login({ onLogin, onDemo }: { onLogin: (user: User) => void; onDemo: () => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -126,6 +127,7 @@ function Login({ onLogin }: { onLogin: (user: User) => void }) {
     {mode === "register" && <small className="data-note">Use at least 12 characters. Passwords are never displayed or sent to the browser's storage.</small>}
     <button className="button button-primary button-wide" disabled={busy}>{busy ? "Please wait…" : mode === "register" ? "Create account" : "Sign in"}</button>
     <button type="button" className="text-button auth-switch" onClick={() => { setMode(mode === "register" ? "login" : "register"); setError(""); }}>{mode === "register" ? "Already registered? Sign in" : "New to AdmitWise? Create an account"}</button>
+    <button type="button" className="button button-secondary button-wide demo-entry-button" onClick={onDemo}>Explore read-only demo</button>
     </form>
   </div></main>;
 }
@@ -134,11 +136,13 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState("");
+  const [demoMode, setDemoMode] = useState(false);
   const [view, setView] = useState<View>("dashboard");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [dark, setDark] = useState(false);
   const [comparisonIds, setComparisonIds] = useState<number[]>([]);
+  const [demoComparisonIds, setDemoComparisonIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (!token()) {
@@ -170,9 +174,14 @@ export default function App() {
     setComparisonIds(previous => previous.includes(id) ? previous : [...previous, id]);
     navigate("compare");
   };
+  const setDemoForCompare = (id: string) => {
+    setDemoComparisonIds(previous => previous.includes(id) || previous.length >= 4 ? previous : [...previous, id]);
+    navigate("compare");
+  };
 
   if (authLoading) return <Loading label="Checking your session…" />;
-  if (!user) return <><Login onLogin={setUser} />{authError && <div className="auth-session-error" role="status">{authError}</div>}</>;
+  if (demoMode) return <DemoWorkspace onExit={() => setDemoMode(false)} />;
+  if (!user) return <><Login onLogin={setUser} onDemo={() => setDemoMode(true)} />{authError && <div className="auth-session-error" role="status">{authError}</div>}</>;
 
   return <div className={`app-shell${dark ? " theme-dark" : ""}${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
     <aside className="sidebar" aria-label="Main navigation">
@@ -186,12 +195,12 @@ export default function App() {
       <div className="page-container">
         {view === "dashboard" && <Dashboard user={user} onNavigate={navigate} />}
         {view === "profile" && <ProfilePage />}
-        {view === "explore" && <ExplorePage onCompare={setForCompare} />}
+        {view === "explore" && <ExplorePage onCompare={setForCompare} onDemoCompare={setDemoForCompare} />}
         {view === "eligibility" && <EligibilityPage />}
-        {view === "recommendations" && <RecommendationsPage onCompare={setForCompare} onNavigate={navigate} />}
+        {view === "recommendations" && <RecommendationsPage onCompare={setForCompare} onDemoCompare={setDemoForCompare} onNavigate={navigate} />}
         {view === "what-if" && <WhatIfPage />}
         {view === "careers" && <CareersPage />}
-        {view === "compare" && <ComparePage initialIds={comparisonIds} />}
+        {view === "compare" && <ComparePage initialIds={comparisonIds} initialDemoIds={demoComparisonIds} />}
         {view === "graph" && <GraphPage />}
         {view === "chat" && <ChatPage />}
         {view === "saved" && <SavedPage />}
@@ -236,7 +245,7 @@ function Dashboard({ user, onNavigate }: { user: User; onNavigate: (view: View) 
     <section className="dashboard-grid">
       <article className="card"><div className="section-heading"><div><span className="eyebrow">Academic snapshot</span><h2>Performance & interests</h2></div><button className="text-button" onClick={() => onNavigate("profile")}>Edit profile <ArrowRight size={14} /></button></div><div className="snapshot-grid"><div className="snapshot-stat"><span>Overall marks</span><strong>{profile.aggregate_marks == null ? "Not provided" : `${profile.aggregate_marks}%`}</strong></div><div className="snapshot-stat"><span>Qualification</span><strong>{profile.qualification || "Not provided"}</strong></div><div className="snapshot-stat"><span>Annual budget</span><strong>{profile.annual_budget == null ? "Not provided" : `₹${profile.annual_budget.toLocaleString("en-IN")}`}</strong></div></div><h3 className="subheading">Subjects</h3><div className="chip-list">{Object.entries(profile.subject_marks || {}).length ? Object.entries(profile.subject_marks).map(([name, value]) => <Badge key={name}>{name}: {value}%</Badge>) : <span className="muted">No subject marks added yet.</span>}</div><h3 className="subheading">Interests & skills</h3><div className="chip-list">{[...(profile.interests || []), ...(profile.skills || [])].length ? [...(profile.interests || []), ...(profile.skills || [])].map((item, index) => <Badge key={`${item}-${index}`} tone={index < (profile.interests || []).length ? "accent" : "neutral"}>{item}</Badge>) : <span className="muted">Add interests and skills to your profile.</span>}</div></article>
       <article className="card"><div className="section-heading"><div><span className="eyebrow">Next steps</span><h2>Eligibility overview</h2></div><button className="text-button" onClick={() => onNavigate("eligibility")}>View details <ArrowRight size={14} /></button></div>{eligibility.loading ? <Loading label="Evaluating criteria…" /> : eligibility.error ? <InlineError message={eligibility.error} retry={() => void eligibility.reload()} /> : <div className="eligibility-summary"><strong>{eligibleCount ?? 0}</strong><span>programmes currently marked eligible</span><p>Some catalogue information is pending or unverified. Review each programme’s year-specific reasoning and source before relying on it.</p></div>}</article>
-      <article className="card"><div className="section-heading"><div><span className="eyebrow">Based on your profile</span><h2>Programme recommendations</h2></div><button className="text-button" onClick={() => onNavigate("recommendations")}>View all <ArrowRight size={14} /></button></div>{recommendations.length ? <div className="compact-list">{recommendations.slice(0, 3).map(item => <div className="compact-row" key={item.programme.id}><div><strong>{item.programme.name}</strong><span>{item.programme.university?.name}</span></div><Badge tone="accent">{item.suitability.score}% match</Badge></div>)}</div> : <EmptyState title="No verified recommendations yet" message="The engine recommends only when complete, verified criteria for this academic year establish eligibility. Suitability is not admission probability." action={<button className="text-button" onClick={() => onNavigate("eligibility")}>Review eligibility <ArrowRight size={14} /></button>} />}</article>
+      <article className="card"><div className="section-heading"><div><span className="eyebrow">Based on your profile</span><h2>Verified eligible programmes</h2></div><button className="text-button" onClick={() => onNavigate("recommendations")}>View guidance <ArrowRight size={14} /></button></div>{recommendations.length ? <div className="compact-list">{recommendations.slice(0, 3).map(item => <div className="compact-row" key={item.programme.id}><div><strong>{item.programme.name}</strong><span>{item.programme.university?.name}</span></div><Badge tone="success">Eligible under verified criteria</Badge></div>)}</div> : <EmptyState title="No verified eligible programmes yet" message="You can still explore catalogue suggestions, but only complete, verified criteria for the selected year can establish eligibility." action={<button className="text-button" onClick={() => onNavigate("recommendations")}>Explore suggestions <ArrowRight size={14} /></button>} />}</article>
       <article className="card"><div className="section-heading"><div><span className="eyebrow">Based on your listed skills</span><h2>Career pathway suggestions</h2></div><button className="text-button" onClick={() => onNavigate("careers")}>Explore careers <ArrowRight size={14} /></button></div>{careers.loading ? <Loading label="Loading career pathways…" /> : careers.error ? <InlineError message={careers.error} retry={() => void careers.reload()} /> : topCareers.length ? <div className="compact-list">{topCareers.map(({ career, matches }) => <div className="compact-row" key={career.id}><div><strong>{career.name}</strong><span>{matches.length ? `Profile skill match: ${matches.join(", ")}` : profile.skills.length ? career.technical_skills.slice(0, 3).join(" · ") : "Add skills to see profile matches"}</span></div><BriefcaseBusiness size={18} /></div>)}</div> : <EmptyState title="No verified career pathways found" message="Career suggestions are displayed only when provenance requirements are verified." />}</article>
       <article className="card"><div className="section-heading"><div><span className="eyebrow">Recent activity</span><h2>Counselling history</h2></div><button className="text-button" onClick={() => onNavigate("chat")}>Open counsellor <ArrowRight size={14} /></button></div>{history.loading ? <Loading label="Loading counselling history…" /> : history.error ? <InlineError message={history.error} retry={() => void history.reload()} /> : history.data?.length ? <div className="compact-list">{history.data.slice(-3).reverse().map(item => <div className="activity-row" key={item.id}><MessageCircle size={16} /><div><strong>{item.message}</strong><span>{new Date(item.created_at).toLocaleString()}</span></div></div>)}</div> : <EmptyState title="No counselling activity yet" message="Your questions and grounded responses will appear here after your first chat." />}</article>
     </section>
@@ -348,26 +357,106 @@ function ProfilePage() {
   </div>;
 }
 
-function ExplorePage({ onCompare }: { onCompare: (id: number) => void }) {
-  const [academicYear, setAcademicYear] = useState(currentAcademicYear);
-  const loader = useCallback(() => api.programmes(academicYear), [academicYear]);
-  const resource = useRemote(loader);
+function ExplorePage({ onCompare, onDemoCompare }: { onCompare: (id: number) => void; onDemoCompare: (id: string) => void }) {
+  const [academicYear, setAcademicYear] = useState("");
   const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("");
+  const [institution, setInstitution] = useState("");
+  const [location, setLocation] = useState("");
+  const [category, setCategory] = useState("");
+  const filters = useMemo(
+    () => ({ q: query, status, institution, location, category }),
+    [query, status, institution, location, category],
+  );
+  const loader = useCallback(
+    () => api.programmes(academicYear, { ...filters, limit: 30 }),
+    [academicYear, filters],
+  );
+  const resource = useRemote(loader);
+  const [additional, setAdditional] = useState<Programme[]>([]);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [moreError, setMoreError] = useState("");
   const [savedIds, setSavedIds] = useState<number[]>([]);
   const [actionError, setActionError] = useState("");
   const [savingId, setSavingId] = useState<number | null>(null);
-  const items = (resource.data || []).filter(item => `${item.name} ${item.discipline || ""} ${item.university?.name || ""}`.toLowerCase().includes(query.toLowerCase()));
+  useEffect(() => { setAdditional([]); setMoreError(""); }, [academicYear, filters]);
+  const items = [...(resource.data?.items || []), ...additional];
+  const categories = Array.from(new Set([
+    ...items.map(item => item.discipline),
+    ...DEMO_PROGRAMMES.map(item => item.discipline),
+  ].filter((value): value is string => Boolean(value)))).sort();
+  const demoItems = filterDemoProgrammes(DEMO_PROGRAMMES, {
+    query,
+    institution,
+    location,
+    discipline: category,
+    status,
+  });
+  const loadMore = async () => {
+    if (!resource.data || loadingMore) return;
+    setLoadingMore(true);
+    setMoreError("");
+    try {
+      const page = await api.programmes(academicYear, {
+        ...filters,
+        offset: items.length,
+        limit: 30,
+      });
+      setAdditional(previous => [...previous, ...page.items]);
+    } catch (reason) {
+      setMoreError(errorMessage(reason));
+    } finally {
+      setLoadingMore(false);
+    }
+  };
   const save = async (id: number) => {
     setSavingId(id); setActionError("");
     try { await api.save(id); setSavedIds(previous => [...previous, id]); }
     catch (reason) { setActionError(errorMessage(reason)); }
     finally { setSavingId(null); }
   };
-  return <div className="page-stack"><PageTitle eyebrow="Explore" title="Explore programmes" description="Search programmes with verified criteria for the selected academic year. Verify admissions information with each institution." actions={<AcademicYearField value={academicYear} onChange={setAcademicYear} />} />
-    <div className="search-field"><Search size={18} /><input aria-label="Search programmes" placeholder="Search programmes, subjects or universities" value={query} onChange={event => setQuery(event.target.value)} /></div>
+  return <div className="page-stack"><PageTitle eyebrow="Explore" title="Explore programmes" description="Browse catalogue listings, including pending records. Pending or unavailable information is not verified admission guidance." actions={<AcademicYearField value={academicYear} onChange={setAcademicYear} />} />
+    <div className="search-field"><Search size={18} /><input aria-label="Search programmes, institutions, subjects or locations" placeholder="Search programmes, institutions, subjects or locations" value={query} onChange={event => setQuery(event.target.value)} /></div>
+    <div className="catalogue-filters">
+      <label>Verification status<select value={status} onChange={event => setStatus(event.target.value)}><option value="">All statuses</option><option value="VERIFIED">Verified criteria</option><option value="PENDING_VERIFICATION">Pending verification</option><option value="UNAVAILABLE">Unavailable</option><option value="EXPIRED">Expired</option><option value="NOT_CURRENT_FOR_YEAR">Not current for selected year</option></select></label>
+      <label>Institution<input value={institution} onChange={event => setInstitution(event.target.value)} placeholder="Filter institution" /></label>
+      <label>Location<input value={location} onChange={event => setLocation(event.target.value)} placeholder="Filter city or state" /></label>
+      <label>Programme category<select value={category} onChange={event => setCategory(event.target.value)}><option value="">All categories</option>{categories.map(value => <option key={value} value={value}>{value}</option>)}</select></label>
+    </div>
     {actionError && <div className="notice notice-error">{actionError}</div>}
-    {resource.loading ? <Loading label="Loading programme catalogue…" /> : resource.error ? <ErrorState message={resource.error} retry={() => void resource.reload()} /> : !resource.data?.length ? <EmptyState title="No programmes are available" message="The programme catalogue returned no records. Retry or contact the administrator." action={<button className="button button-secondary" onClick={() => void resource.reload()}>Retry</button>} /> : items.length ? <div className="programme-grid">{items.map(programme => <ProgrammeCard key={programme.id} programme={programme} actions={<><button className="button button-secondary" onClick={() => onCompare(programme.id)}>Compare</button><button className="button button-primary" disabled={savingId === programme.id || savedIds.includes(programme.id)} onClick={() => void save(programme.id)}>{savedIds.includes(programme.id) ? <><Check size={15} /> Saved</> : <><Bookmark size={15} /> {savingId === programme.id ? "Saving…" : "Save"}</>}</button></>} />)}</div> : <EmptyState title="No matching programmes" message="Try a different programme, subject or university name." />}
+    {resource.loading ? <Loading label="Loading programme catalogue…" /> : <>
+      {resource.error && <ErrorState message={resource.error} retry={() => void resource.reload()} />}
+      {!!resource.data?.total && <>
+        <section className="recommendation-section">
+          <div className="section-heading"><div><h2>Actual catalogue records</h2><p className="muted">Catalogue entries retain their own source and verification status.</p></div></div>
+          <p className="data-note">Showing {items.length} of {resource.data.total} matching catalogue records.</p>
+          <div className="programme-grid">{items.map(programme => <ProgrammeCard key={programme.id} programme={programme} actions={<><button className="button button-secondary" onClick={() => onCompare(programme.id)}>Compare</button><button className="button button-primary" disabled={savingId === programme.id || savedIds.includes(programme.id)} onClick={() => void save(programme.id)}>{savedIds.includes(programme.id) ? <><Check size={15} /> Saved</> : <><Bookmark size={15} /> {savingId === programme.id ? "Saving…" : "Save"}</>}</button></>} />)}</div>
+          {moreError && <div className="notice notice-error" role="alert">{moreError}<button className="text-button" onClick={() => void loadMore()}>Retry</button></div>}
+          {items.length < resource.data.total && <button className="button button-secondary load-more" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "Loading…" : "Load more programmes"}</button>}
+        </section>
+      </>}
+      {demoItems.length > 0 && <section className="recommendation-section" aria-label="Demonstration programme catalogue">
+        <div className="section-heading"><div><span className="eyebrow">Separate from the official catalogue</span><h2>{resource.data?.total ? "Illustrative demonstration programmes" : "Demonstration programme catalogue"}</h2><p className="muted">These locally maintained examples are not stored in or treated as official admission records.</p></div></div>
+        <div className="notice notice-warning" role="status">Demonstration data — not official admission information</div>
+        <div className="programme-grid">{demoItems.map(programme => <DemoProgrammeCard key={programme.id} programme={programme} onCompare={onDemoCompare} />)}</div>
+      </section>}
+      {!resource.data?.total && !demoItems.length && <EmptyState title="No programmes match these filters" message="Try clearing the academic year or filters. Demonstration programmes are shown when they match the selected search and filters." action={<button className="button button-secondary" onClick={() => { setAcademicYear(""); setQuery(""); setStatus(""); setInstitution(""); setLocation(""); setCategory(""); }}>Clear filters</button>} />}
+    </>}
   </div>;
+}
+
+function DemoProgrammeCard({ programme, onCompare }: { programme: DemoProgramme; onCompare: (id: string) => void }) {
+  return <article className="card programme-card demo-programme-card">
+    <div className="programme-card-top"><span className="card-icon"><GraduationCap size={20} /></span><Badge tone="warning">DEMO_ONLY</Badge></div>
+    <h2>{programme.name}</h2>
+    <p className="university-line">{programme.institutionName} · {programme.degreeLevel}</p>
+    <p>{programme.description}</p>
+    <div className="programme-facts"><span><Compass size={15} />{programme.location}</span><span><BookOpen size={15} />{programme.duration}</span></div>
+    <small className="data-note">Academic year: {programme.academicYear} · Source: {programme.dataSource}</small>
+    <p className="demo-eligibility">Demo data — official eligibility criteria unavailable.</p>
+    <div className="demo-card-details"><strong>Related subjects</strong><span>{programme.relatedSubjects.join(", ")}</span><strong>Related skills</strong><span>{programme.relatedSkills.join(", ")}</span><strong>Illustrative career pathways</strong><span>{programme.careerPathways.join(", ")}</span></div>
+    <div className="card-actions"><button className="button button-secondary" onClick={() => onCompare(programme.id)}>Compare demo programme</button></div>
+  </article>;
 }
 
 function EligibilityPage() {
@@ -405,7 +494,7 @@ function ReasonList({ title, values }: { title: string; values: string[] }) {
   return <div><h3>{title}</h3>{values.length ? <ul>{values.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ul> : <span className="muted">None reported</span>}</div>;
 }
 
-function RecommendationsPage({ onCompare, onNavigate }: { onCompare: (id: number) => void; onNavigate: (view: View) => void }) {
+function RecommendationsPage({ onCompare, onDemoCompare, onNavigate }: { onCompare: (id: number) => void; onDemoCompare: (id: string) => void; onNavigate: (view: View) => void }) {
   const [academicYear, setAcademicYear] = useState(currentAcademicYear);
   const recommendationLoader = useCallback(() => api.recommendations(academicYear), [academicYear]);
   const recommendations = useRemote(recommendationLoader);
@@ -418,25 +507,60 @@ function RecommendationsPage({ onCompare, onNavigate }: { onCompare: (id: number
     catch (reason) { setNotice(errorMessage(reason)); }
     finally { setSaving(null); }
   };
-  return <div className="page-stack"><PageTitle eyebrow="Personalized guidance" title="Programme recommendations" description={`Eligibility is evaluated separately from suitability for ${academicYear || "no selected academic year"}. A high suitability score is not an admission guarantee.`} actions={<AcademicYearField value={academicYear} onChange={setAcademicYear} />} />
+  const categories = recommendations.data;
+  const demoSuggestions = useMemo(
+    () => profile.data ? rankDemoProgrammes(profile.data) : [],
+    [profile.data],
+  );
+  return <div className="page-stack"><PageTitle eyebrow="Personalized guidance" title="Programme recommendations" description={`Verified recommendations require complete criteria for ${academicYear || "the selected academic year"}. Explore suggestions are relevance matches, not eligibility or admission predictions.`} actions={<AcademicYearField value={academicYear} onChange={setAcademicYear} />} />
     {notice && <div className="notice notice-info" role="status">{notice}</div>}
-    {recommendations.loading || profile.loading ? <Loading label="Ranking programmes against your profile…" /> : recommendations.error ? <ErrorState message={recommendations.error} retry={() => void recommendations.reload()} /> : profile.error ? <ErrorState message={profile.error} retry={() => void profile.reload()} /> : recommendations.data?.length ? <div className="programme-grid">{recommendations.data.map(item => <RecommendationCard key={item.programme.id} recommendation={item} budget={profile.data?.annual_budget ?? null} onCompare={onCompare} onSave={save} saving={saving === item.programme.id} />)}</div> : <EmptyState title="No verified recommendations for this academic year" message="Only programmes with complete, source-backed criteria for the selected year can produce a definitive eligibility result or be recommended." action={<div className="inline-actions"><button className="button button-secondary" onClick={() => onNavigate("eligibility")}>Review eligibility</button><button className="button button-primary" onClick={() => onNavigate("profile")}>Update profile</button></div>} />}
+    {recommendations.loading || profile.loading ? <Loading label="Checking your profile against catalogue records…" /> : recommendations.error ? <ErrorState message={recommendations.error} retry={() => void recommendations.reload()} /> : profile.error ? <ErrorState message={profile.error} retry={() => void profile.reload()} /> : <>
+      <section className="recommendation-section"><div className="section-heading"><div><span className="eyebrow">Verified criteria only</span><h2>Verified recommendations</h2><p className="muted">Only complete and source-backed criteria can establish eligibility.</p></div></div>{categories?.verified_recommendations.length ? <div className="programme-grid">{categories.verified_recommendations.map(item => <RecommendationCard key={item.programme.id} recommendation={item} onCompare={onCompare} onSave={save} saving={saving === item.programme.id} />)}</div> : <EmptyState title="No programmes can currently be confirmed eligible" message="This does not mean there are no relevant programmes. Review the exploratory suggestions and verify requirements with their official sources." action={<button className="button button-secondary" onClick={() => onNavigate("eligibility")}>Review eligibility results</button>} />}</section>
+      <section className="recommendation-section"><div className="section-heading"><div><span className="eyebrow">Relevance matches, not admissions advice</span><h2>Explore suggestions</h2><p className="muted">These catalogue records align with profile details. Pending or unavailable requirements must be checked with the institution.</p></div></div>{categories?.explore_suggestions.length ? <div className="programme-grid">{categories.explore_suggestions.map(item => <ExploreSuggestionCard key={item.programme.id} suggestion={item} onCompare={onCompare} onSave={save} saving={saving === item.programme.id} />)}</div> : <EmptyState title="No profile-based suggestions yet" message="Add interests, skills, subject marks, a career goal, or a location preference to your profile. You can also browse all catalogue records in Explore." action={<div className="inline-actions"><button className="button button-secondary" onClick={() => onNavigate("profile")}>Complete profile</button><button className="button button-primary" onClick={() => onNavigate("explore")}>Browse catalogue</button></div>} />}</section>
+      <section className="recommendation-section"><div className="section-heading"><div><span className="eyebrow">Illustrative matches only</span><h2>Exploratory programme suggestions</h2><p className="muted">Ranked from your saved interests, subjects, skills, and career preferences. These are illustrative suggestions, not verified admission recommendations.</p></div></div><div className="notice notice-warning" role="status">Demonstration data — not official admission information</div><div className="programme-grid">{demoSuggestions.map(({ programme, reasons }) => <DemoSuggestionCard key={programme.id} programme={programme} reasons={reasons} onCompare={onDemoCompare} />)}</div></section>
+    </>}
   </div>;
 }
 
-function RecommendationCard({ recommendation, budget, onCompare, onSave, saving }: { recommendation: Recommendation; budget: number | null; onCompare: (id: number) => void; onSave: (id: number) => void; saving: boolean }) {
+function DemoSuggestionCard({ programme, reasons, onCompare }: { programme: DemoProgramme; reasons: string[]; onCompare: (id: string) => void }) {
+  const explanation = reasons.length
+    ? reasons
+    : ["No matching profile details were found; this is a general illustrative option."];
+  return <article className="card recommendation-card demo-programme-card">
+    <div className="recommendation-top"><Badge tone="warning">Illustrative suggestion</Badge><Badge>DEMO_ONLY</Badge></div>
+    <h2>{programme.name}</h2><p className="university-line">{programme.institutionName} · {programme.location}</p>
+    <div className="programme-facts"><span><BookOpen size={15} />{programme.discipline}</span><span>{programme.duration}</span></div>
+    <div className="recommendation-explanation"><h3>Why it appears</h3><ul>{explanation.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul></div>
+    <p className="demo-eligibility">Illustrative suggestion only — not a verified admission recommendation.</p>
+    <small className="data-note">{programme.academicYear} · {programme.dataSource}</small>
+    <div className="card-actions"><button className="button button-secondary" onClick={() => onCompare(programme.id)}>Compare demo programme</button></div>
+  </article>;
+}
+
+function RecommendationCard({ recommendation, onCompare, onSave, saving }: { recommendation: Recommendation; onCompare: (id: number) => void; onSave: (id: number) => void; saving: boolean }) {
   const programme = recommendation.programme;
-  const affordable = budget == null || programme.annual_fee == null ? null : programme.annual_fee <= budget;
-  const statusTone = recommendation.status === "Eligible" ? "success" : "warning";
-  return <article className="card recommendation-card"><div className="recommendation-top"><Badge tone={statusTone}>{recommendation.status}</Badge><div className="score-pill"><strong>{recommendation.suitability.score}%</strong><span>suitability</span></div></div>
+  return <article className="card recommendation-card"><div className="recommendation-top"><Badge tone="success">Eligible under verified criteria</Badge></div>
     <h2>{programme.name}</h2><p className="university-line">{programme.university?.name || "University not provided"}</p>
-    <div className="programme-facts"><span><BookOpen size={15} />{programme.discipline || "Discipline not specified"}</span><span><span aria-hidden="true">₹</span>{programme.annual_fee == null ? "Fee not listed" : `₹${programme.annual_fee.toLocaleString("en-IN")} / year`}</span><span><Compass size={15} />{programme.university?.location || "Location not listed"}</span></div>
-    <div className="affordability"><strong>Affordability</strong>{recommendation.affordability?.status === "affordable" ? <Badge tone="success">Verified fee is within your budget</Badge> : recommendation.affordability?.status === "over_budget" ? <Badge tone="warning">Verified fee is above your budget</Badge> : <Badge>Unknown — {budget == null ? "budget not provided" : "fee not verified for this year"}</Badge>}</div>
-    <div className="recommendation-explanation"><h3>Why it appears here</h3><ul>{recommendation.suitability.explanation.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul></div>
+    <div className="programme-facts"><span><BookOpen size={15} />{programme.discipline || "Discipline not specified"}</span><span><span aria-hidden="true">₹</span>{programme.annual_fee == null ? "Fee not verified" : `₹${programme.annual_fee.toLocaleString("en-IN")} / year`}</span><span><Compass size={15} />{programme.university?.location || "Location not listed"}</span></div>
+    <div className="affordability"><strong>Affordability</strong>{recommendation.affordability?.status === "affordable" ? <Badge tone="success">Verified fee is within your budget</Badge> : recommendation.affordability?.status === "over_budget" ? <Badge tone="warning">Verified fee is above your budget</Badge> : <Badge>Unknown — fee or budget not verified</Badge>}</div>
+    <div className="recommendation-explanation"><h3>Profile matches</h3><ul>{recommendation.relevance_reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul></div>
     <div className="eligibility-explanation"><h3>Eligibility reasoning</h3><ReasonList title="Satisfied" values={recommendation.satisfied} /><ReasonList title="Outstanding" values={[...recommendation.unsatisfied, ...recommendation.missing]} /></div>
-    <small className="data-note">{programme.verification_status || "UNVERIFIED"} · academic year {programme.academic_year || "unknown"}{programme.source_url && <> · <a href={programme.source_url} target="_blank" rel="noreferrer">{programme.source_title || "Official source"}</a></>}{programme.fee_verification_status !== "VERIFIED" && " · fee not verified"}</small>
+    <small className="data-note">{programme.criteria_status || programme.verification_status || "UNVERIFIED"} · academic year {programme.academic_year || "unknown"}{programme.source_url && <> · <a href={programme.source_url} target="_blank" rel="noreferrer">{programme.source_title || "Official source"}</a></>}</small>
     {programme.fee_verification_status === "VERIFIED" && <SourceLink url={programme.fee_source_url} title={programme.fee_source_title} label={`Fee source · ${programme.fee_academic_year || "year unknown"}`} />}
     <div className="card-actions"><button className="button button-secondary" onClick={() => onCompare(programme.id)}>Compare</button><button className="button button-primary" disabled={saving} onClick={() => onSave(programme.id)}><Bookmark size={15} />{saving ? "Saving…" : "Save programme"}</button></div>
+  </article>;
+}
+
+function ExploreSuggestionCard({ suggestion, onCompare, onSave, saving }: { suggestion: ExploreSuggestion; onCompare: (id: number) => void; onSave: (id: number) => void; saving: boolean }) {
+  const programme = suggestion.programme;
+  return <article className="card recommendation-card"><div className="recommendation-top"><Badge tone="warning">Explore suggestion · verify details</Badge><Badge>{suggestion.eligibility_status}</Badge></div>
+    <h2>{programme.name}</h2><p className="university-line">{programme.university?.name || "Institution not available"}</p>
+    <div className="programme-facts"><span><BookOpen size={15} />{programme.discipline || "Category unavailable"}</span><span><Compass size={15} />{programme.university?.location || "Location unavailable"}</span><span>{programme.academic_year || "Academic year not specified"}</span></div>
+    <div className="recommendation-explanation"><h3>Why it may be relevant</h3><ul>{suggestion.relevance_reasons.map((reason, index) => <li key={`${reason}-${index}`}>{reason}</li>)}</ul></div>
+    <div className="eligibility-explanation"><ReasonList title="Missing / unverified" values={suggestion.missing.length ? suggestion.missing : ["Eligibility is not established by this relevance suggestion."]} /><ReasonList title="Unsatisfied verified criteria" values={suggestion.unsatisfied} /></div>
+    <div className="affordability"><strong>Affordability</strong><Badge>{suggestion.affordability?.status === "unknown" ? "Unknown — fee or budget not verified" : suggestion.affordability?.status}</Badge></div>
+    <small className="data-note">{programme.criteria_status || programme.verification_status || "UNVERIFIED"} · criteria year {programme.academic_year || "not specified"} · fee {programme.fee_verification_status || "unknown"}{programme.source_url && <> · <a href={programme.source_url} target="_blank" rel="noreferrer">{programme.source_title || "Catalogue source"}</a></>}</small>
+    <div className="card-actions"><button className="button button-secondary" onClick={() => onCompare(programme.id)}>Compare</button><button className="button button-primary" disabled={saving} onClick={() => onSave(programme.id)}><Bookmark size={15} />{saving ? "Saving…" : "Save suggestion"}</button></div>
   </article>;
 }
 
@@ -474,54 +598,247 @@ function WhatIfPage() {
 
 function CareersPage() {
   const resource = useRemote(api.careers);
-  return <div className="page-stack"><PageTitle eyebrow="Career planning" title="Career explorer" description="Explore the career pathways and skills returned by the guidance service." />
-    {resource.loading ? <Loading label="Loading career pathways…" /> : resource.error ? <ErrorState message={resource.error} retry={() => void resource.reload()} /> : resource.data?.length ? <div className="programme-grid">{resource.data.map(career => <CareerCard career={career} key={career.id} />)}</div> : <EmptyState title="No career pathways available" message="The careers endpoint returned no records. Retry later or ask an administrator to review the catalogue." action={<button className="button button-secondary" onClick={() => void resource.reload()}>Retry</button>} />}
+  const profile = useRemote(api.profile);
+  const careers = useMemo(() => {
+    const records = resource.data || [];
+    if (!profile.data) return records;
+    const profileTerms = [
+      ...Object.keys(profile.data.subject_marks || {}),
+      ...(profile.data.interests || []),
+      ...(profile.data.skills || []),
+    ].map(term => term.toLocaleLowerCase());
+    const goal = profile.data.profile?.career_goal;
+    const goals = (Array.isArray(goal) ? goal : typeof goal === "string" ? [goal] : [])
+      .filter((term): term is string => typeof term === "string")
+      .map(term => term.toLocaleLowerCase());
+    const matches = (career: Career) => {
+      const searchable = [
+        career.name,
+        career.description,
+        ...(career.related_subjects || []),
+        ...(career.technical_skills || []),
+        ...(career.soft_skills || []),
+        ...(career.learning_areas || []),
+      ].join(" ").toLocaleLowerCase();
+      return [...profileTerms, ...goals].filter(term => term && searchable.includes(term)).length;
+    };
+    return [...records].sort((left, right) => matches(right) - matches(left));
+  }, [resource.data, profile.data]);
+  return <div className="page-stack"><PageTitle eyebrow="Career planning" title="Career explorer" description="Illustrative career pathways are local examples, not employment guarantees. Verified catalogue career records are labeled separately." />
+    {profile.error && <div className="notice notice-info" role="status">Personalization is unavailable because the profile could not be loaded. The career catalogue remains available.</div>}
+    {resource.loading ? <Loading label="Loading career pathways…" /> : resource.error ? <ErrorState message={resource.error} retry={() => void resource.reload()} /> : careers.length ? <div className="programme-grid">{careers.map(career => <CareerCard career={career} key={career.id} />)}</div> : <EmptyState title="No career pathways available" message="The career catalogue returned no records. Retry later or ask an administrator to review the catalogue." action={<button className="button button-secondary" onClick={() => void resource.reload()}>Retry</button>} />}
   </div>;
 }
 
 function CareerCard({ career }: { career: Career }) {
-  return <article className="card career-card"><span className="card-icon"><BriefcaseBusiness size={20} /></span><h2>{career.name}</h2><p>{career.description}</p><h3>Technical skills</h3><div className="chip-list">{career.technical_skills.length ? career.technical_skills.map(skill => <Badge key={skill}>{skill}</Badge>) : <span className="muted">Not listed</span>}</div><h3>People skills</h3><div className="chip-list">{career.soft_skills.length ? career.soft_skills.map(skill => <Badge key={skill}>{skill}</Badge>) : <span className="muted">Not listed</span>}</div><h3>Learning roadmap</h3>{career.roadmap.length ? <ol className="roadmap-list">{career.roadmap.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ol> : <span className="muted">No roadmap provided.</span>}{career.source_url && <p className="data-note">{career.verification_status} · {career.academic_year || "year not specified"} · <a href={career.source_url} target="_blank" rel="noreferrer">{career.source_title || "Source"}</a></p>}</article>;
+  const demoProgrammes = demoProgrammesForCareer(career.name, career.related_disciplines || []);
+  return <article className="card career-card"><div className="career-heading"><span className="card-icon"><BriefcaseBusiness size={20} /></span><Badge tone={career.illustrative ? "warning" : "success"}>{career.illustrative ? "Illustrative pathway" : career.verification_status || "Verified catalogue"}</Badge></div><h2>{career.name}</h2><p>{career.description}</p>{career.illustrative && <p className="notice notice-info">Illustrative information only. This pathway does not guarantee employment or describe salary or placement outcomes.</p>}<h3>Related academic subjects</h3><div className="chip-list">{career.related_subjects?.length ? career.related_subjects.map(subject => <Badge key={subject}>{subject}</Badge>) : <span className="muted">Not listed</span>}</div><h3>Relevant skills</h3><div className="chip-list">{[...career.technical_skills, ...career.soft_skills].length ? [...career.technical_skills, ...career.soft_skills].map(skill => <Badge key={skill}>{skill}</Badge>) : <span className="muted">Not listed</span>}</div><h3>Suggested learning areas</h3>{(career.learning_areas || career.roadmap).length ? <ul className="roadmap-list">{(career.learning_areas || career.roadmap).map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ul> : <span className="muted">Not listed</span>}<h3>Typical responsibilities</h3>{career.responsibilities?.length ? <ul className="roadmap-list">{career.responsibilities.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ul> : <span className="muted">Not listed</span>}{career.related_programmes?.length ? <><h3>Related catalogue programmes</h3><div className="chip-list">{career.related_programmes.map(programme => <Badge key={programme.id}>{programme.name} · {programme.verification_status}</Badge>)}</div></> : null}{demoProgrammes.length > 0 && <><h3>Illustrative demo programmes</h3><p className="data-note">These are illustrative relationships only; they do not imply admission or employment outcomes.</p><div className="chip-list">{demoProgrammes.map(programme => <Badge key={programme.id} tone="warning">{programme.name} · DEMO_ONLY</Badge>)}</div></>}{career.source_url ? <p className="data-note">{career.verification_status} · {career.academic_year || "year not specified"} · <a href={career.source_url} target="_blank" rel="noreferrer">{career.source_title || "Source"}</a></p> : career.illustrative ? <p className="data-note">{career.source_title} · {career.data_notes}</p> : null}</article>;
 }
 
-function ComparePage({ initialIds }: { initialIds: number[] }) {
-  const [academicYear, setAcademicYear] = useState(currentAcademicYear);
-  const loader = useCallback(() => api.programmes(academicYear), [academicYear]);
+function ComparePage({ initialIds, initialDemoIds }: { initialIds: number[]; initialDemoIds: string[] }) {
+  const [academicYear, setAcademicYear] = useState("");
+  const loader = useCallback(() => api.programmes(academicYear, { limit: 500 }), [academicYear]);
   const resource = useRemote(loader);
   const [selected, setSelected] = useState<number[]>(initialIds);
-  const [compared, setCompared] = useState<Programme[] | null>(null);
+  const [selectedDemo, setSelectedDemo] = useState<string[]>(initialDemoIds);
+  const [compared, setCompared] = useState<ProgrammeComparison[] | null>(null);
+  const [demoCompared, setDemoCompared] = useState<DemoProgramme[] | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   useEffect(() => { if (initialIds.length) setSelected(previous => Array.from(new Set([...previous, ...initialIds]))); }, [initialIds]);
+  useEffect(() => { if (initialDemoIds.length) setSelectedDemo(previous => Array.from(new Set([...previous, ...initialDemoIds]))); }, [initialDemoIds]);
   const toggle = (id: number) => setSelected(previous => previous.includes(id) ? previous.filter(value => value !== id) : previous.length < 4 ? [...previous, id] : previous);
+  const toggleDemo = (id: string) => {
+    setDemoCompared(null);
+    setSelectedDemo(previous => previous.includes(id) ? previous.filter(value => value !== id) : previous.length < 4 ? [...previous, id] : previous);
+  };
   const run = async () => {
     setError(""); setLoading(true);
     try { setCompared(await api.compare(selected, academicYear)); }
     catch (reason) { setError(errorMessage(reason)); }
     finally { setLoading(false); }
   };
-  return <div className="page-stack"><PageTitle eyebrow="Side-by-side analysis" title="Compare programmes" description={`Compare catalogue details for ${academicYear || "no selected academic year"}.`} actions={<AcademicYearField value={academicYear} onChange={setAcademicYear} />} />
-    {resource.loading ? <Loading label="Loading programme catalogue…" /> : resource.error ? <ErrorState message={resource.error} retry={() => void resource.reload()} /> : <>
-      <section className="card"><div className="section-heading"><div><h2>Select programmes</h2><p className="muted">Choose 2–4 programmes to compare. {selected.length}/4 selected.</p></div></div><div className="selection-grid">{resource.data?.map(programme => <label className={`selection-item${selected.includes(programme.id) ? " selected" : ""}`} key={programme.id}><input type="checkbox" checked={selected.includes(programme.id)} disabled={!selected.includes(programme.id) && selected.length >= 4} onChange={() => toggle(programme.id)} /><span><strong>{programme.name}</strong><small>{programme.university?.name}</small></span></label>)}</div><button className="button button-primary" disabled={selected.length < 2 || loading} onClick={() => void run()}>{loading ? "Comparing…" : "Compare selected programmes"}</button>{error && <div className="notice notice-error" role="alert">{error}<button className="text-button" onClick={() => void run()}>Retry</button></div>}</section>
-      {compared && (compared.length ? <ComparisonTable programmes={compared} /> : <EmptyState title="No comparison results" message="The API returned no matching programme records. Check your selection and retry." action={<button className="button button-secondary" onClick={() => void run()}>Retry comparison</button>} />)}
-      {!compared && selected.length < 2 && <EmptyState title="Select programmes to begin" message="Choose at least two programmes above. Results will appear here." />}
+  const runDemoComparison = () => {
+    setDemoCompared(selectDemoProgrammes(selectedDemo));
+  };
+  return <div className="page-stack"><PageTitle eyebrow="Side-by-side analysis" title="Compare programmes" description="Official catalogue comparisons retain their verification details. Demo comparisons use only illustrative subjects, skills, duration, and pathways." actions={<AcademicYearField value={academicYear} onChange={setAcademicYear} />} />
+    {resource.loading ? <Loading label="Loading programme catalogue…" /> : <>
+      {resource.error && <ErrorState message={resource.error} retry={() => void resource.reload()} />}
+      {!!resource.data?.total && <>
+        <section className="card"><div className="section-heading"><div><h2>Official catalogue programmes</h2><p className="muted">Choose 2–4 verified or pending catalogue records. {selected.length}/4 selected.</p></div></div><div className="selection-grid">{resource.data.items.map(programme => <label className={`selection-item${selected.includes(programme.id) ? " selected" : ""}`} key={programme.id}><input type="checkbox" checked={selected.includes(programme.id)} disabled={!selected.includes(programme.id) && selected.length >= 4} onChange={() => toggle(programme.id)} /><span><strong>{programme.name}</strong><small>{programme.university?.name || "Institution unavailable"} · {programme.criteria_status || programme.verification_status}</small></span></label>)}</div><button className="button button-primary" disabled={selected.length < 2 || loading} onClick={() => void run()}>{loading ? "Comparing…" : "Compare selected official programmes"}</button>{error && <div className="notice notice-error" role="alert">{error}<button className="text-button" onClick={() => void run()}>Retry</button></div>}</section>
+        {compared && (compared.length ? <ComparisonTable programmes={compared} /> : <EmptyState title="No comparison results" message="The API returned no matching programme records. Check your selection and retry." action={<button className="button button-secondary" onClick={() => void run()}>Retry comparison</button>} />)}
+      </>}
+      <section className="recommendation-section" aria-label="Demonstration programme comparison">
+        <div className="section-heading"><div><span className="eyebrow">Not official admissions data</span><h2>Compare demonstration programmes</h2><p className="muted">Select 2–4 illustrative records. Demo programmes are compared locally and are never sent to or stored in the catalogue database. {selectedDemo.length}/4 selected.</p></div></div>
+        <div className="notice notice-warning" role="status">Demonstration data — not official admission information</div>
+        <div className="selection-grid">{DEMO_PROGRAMMES.map(programme => <label className={`selection-item${selectedDemo.includes(programme.id) ? " selected" : ""}`} key={programme.id}><input type="checkbox" checked={selectedDemo.includes(programme.id)} disabled={!selectedDemo.includes(programme.id) && selectedDemo.length >= 4} onChange={() => toggleDemo(programme.id)} /><span><strong>{programme.name}</strong><small>{programme.discipline} · DEMO_ONLY</small></span></label>)}</div>
+        <button className="button button-primary" disabled={selectedDemo.length < 2} onClick={runDemoComparison}>Compare selected demo programmes</button>
+        {demoCompared && (demoCompared.length >= 2 ? <DemoComparisonTable programmes={demoCompared} /> : <div className="notice notice-info" role="status">Select at least two demonstration programmes to compare.</div>)}
+      </section>
+      {!resource.data?.total && !selectedDemo.length && <EmptyState title="Select programmes to begin" message="Choose two or more demonstration programmes above, or use the official catalogue comparison if records are available." />}
     </>}
   </div>;
 }
 
-function ComparisonTable({ programmes }: { programmes: Programme[] }) {
-  const rows: Array<[string, (programme: Programme) => ReactNode]> = [
+function DemoComparisonTable({ programmes }: { programmes: DemoProgramme[] }) {
+  const rows: Array<[string, (programme: DemoProgramme) => ReactNode]> = [
+    ["Discipline", programme => programme.discipline],
+    ["Degree level", programme => programme.degreeLevel],
+    ["Duration", programme => programme.duration],
+    ["Related subjects", programme => programme.relatedSubjects.join(", ")],
+    ["Related skills", programme => programme.relatedSkills.join(", ")],
+    ["Career pathways", programme => programme.careerPathways.join(", ")],
+    ["Verification status", programme => <Badge tone="warning">{programme.verificationStatus}</Badge>],
+  ];
+  return <div className="comparison-table-wrap"><table className="comparison-table"><thead><tr><th>Attribute</th>{programmes.map(programme => <th key={programme.id}>{programme.name}</th>)}</tr></thead><tbody>{rows.map(([label, value]) => <tr key={label}><th>{label}</th>{programmes.map(programme => <td key={programme.id}>{value(programme)}</td>)}</tr>)}</tbody></table><p className="data-note">No fees, cutoffs, or eligibility conclusions are included in demo comparisons.</p></div>;
+}
+
+type DemoWorkspaceView = "explore" | "suggestions" | "compare" | "careers" | "graph";
+
+const EMPTY_DEMO_PROFILE: Profile = {
+  subject_marks: {},
+  entrance_scores: {},
+  interests: [],
+  aptitude: {},
+  skills: [],
+  profile: {},
+};
+
+function DemoWorkspace({ onExit }: { onExit: () => void }) {
+  const [view, setView] = useState<DemoWorkspaceView>("explore");
+  const [query, setQuery] = useState("");
+  const [discipline, setDiscipline] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [compared, setCompared] = useState<DemoProgramme[] | null>(null);
+  const [graphQuery, setGraphQuery] = useState("");
+  const [selectedNodeId, setSelectedNodeId] = useState("");
+  const suggestions = useMemo(() => rankDemoProgrammes(EMPTY_DEMO_PROFILE), []);
+  const programmes = filterDemoProgrammes(DEMO_PROGRAMMES, { query, discipline });
+  const disciplines = Array.from(new Set(DEMO_PROGRAMMES.map(programme => programme.discipline))).sort();
+  const network = useMemo(() => buildDemoSemanticNetwork(), []);
+  const careerPathways = useMemo(() => Array.from(new Set(DEMO_PROGRAMMES.flatMap(programme => programme.careerPathways))).sort(), []);
+  const chooseForComparison = (id: string) => {
+    setSelectedIds(previous => previous.includes(id) || previous.length >= 4 ? previous : [...previous, id]);
+    setCompared(null);
+    setView("compare");
+  };
+  const toggleComparison = (id: string) => {
+    setCompared(null);
+    setSelectedIds(previous => previous.includes(id)
+      ? previous.filter(selected => selected !== id)
+      : previous.length < 4 ? [...previous, id] : previous);
+  };
+  const matchingIds = new Set(network.nodes.filter(node =>
+    node.name.toLocaleLowerCase().includes(graphQuery.trim().toLocaleLowerCase()),
+  ).map(node => node.id));
+  const visibleIds = new Set(matchingIds);
+  if (graphQuery.trim()) {
+    for (const edge of network.edges) {
+      if (matchingIds.has(edge.source)) visibleIds.add(edge.target);
+      if (matchingIds.has(edge.target)) visibleIds.add(edge.source);
+    }
+  }
+  const graphNodes = network.nodes.filter(node => visibleIds.has(node.id));
+  const graphEdges = network.edges.filter(edge => visibleIds.has(edge.source) && visibleIds.has(edge.target));
+  const rowsByCategory = new Map<string, number>();
+  const categories = Array.from(new Set(graphNodes.map(node => node.label)));
+  const flowNodes: Node<GraphNodeData>[] = graphNodes.map(node => {
+    const row = rowsByCategory.get(node.label) || 0;
+    rowsByCategory.set(node.label, row + 1);
+    return {
+      id: node.id,
+      type: "knowledge",
+      data: {
+        category: node.label,
+        name: node.name,
+        verificationStatus: node.verification_status,
+        academicYear: node.academic_year,
+        dataSource: node.data_source,
+      },
+      position: { x: categories.indexOf(node.label) * 330, y: row * 145 },
+    };
+  });
+  const flowEdges: Edge[] = graphEdges.map(edge => ({
+    id: edge.id,
+    type: "knowledge",
+    source: edge.source,
+    target: edge.target,
+    label: edge.label,
+  }));
+  const selectedNode = network.nodes.find(node => node.id === selectedNodeId);
+  const demoCompared = selectDemoProgrammes(selectedIds);
+
+  return <div className="demo-workspace">
+    <header className="demo-workspace-header"><div className="brand"><span className="brand-mark"><GraduationCap size={22} /></span><span>AdmitWise <small>Demo</small></span></div><div className="demo-header-actions"><Badge tone="warning">Read-only demo</Badge><button className="button button-secondary" onClick={onExit}>Return to sign in</button></div></header>
+    <div className="notice notice-warning demo-workspace-notice" role="status">Demonstration data — not official admission information. This workspace uses local examples only; no account, profile, admin, or backend data is accessed.</div>
+    <nav className="demo-workspace-nav" aria-label="Demo workspace navigation">
+      {([
+        ["explore", "Explore programmes"],
+        ["suggestions", "Exploratory suggestions"],
+        ["compare", "Compare"],
+        ["careers", "Career explorer"],
+        ["graph", "Knowledge graph"],
+      ] as Array<[DemoWorkspaceView, string]>).map(([id, label]) => <button key={id} className={`button ${view === id ? "button-primary" : "button-secondary"}`} aria-current={view === id ? "page" : undefined} onClick={() => setView(id)}>{label}</button>)}
+    </nav>
+    <main className="demo-workspace-content">
+      {view === "explore" && <div className="page-stack">
+        <PageTitle eyebrow="Read-only demo" title="Explore programmes" description="Browse fictitious, locally bundled examples separate from the official catalogue." />
+        <div className="search-field"><Search size={18} /><input aria-label="Search demo programmes" placeholder="Search programmes, subjects, skills or pathways" value={query} onChange={event => setQuery(event.target.value)} /></div>
+        <label className="demo-discipline-filter">Programme discipline<select value={discipline} onChange={event => setDiscipline(event.target.value)}><option value="">All disciplines</option>{disciplines.map(value => <option key={value} value={value}>{value}</option>)}</select></label>
+        <div className="programme-grid">{programmes.map(programme => <DemoProgrammeCard key={programme.id} programme={programme} onCompare={chooseForComparison} />)}</div>
+        {!programmes.length && <EmptyState title="No demo programmes match" message="Try a different search or select all disciplines." action={<button className="button button-secondary" onClick={() => { setQuery(""); setDiscipline(""); }}>Clear filters</button>} />}
+      </div>}
+      {view === "suggestions" && <div className="page-stack">
+        <PageTitle eyebrow="Read-only demo" title="Exploratory programme suggestions" description="General illustrative examples only. This demo has no student profile and makes no verified admission recommendations." />
+        <div className="notice notice-warning" role="status">Suggestions are not personalized, eligibility results, suitability scores, or admission probabilities.</div>
+        <div className="programme-grid">{suggestions.map(({ programme, reasons }) => <DemoSuggestionCard key={programme.id} programme={programme} reasons={reasons} onCompare={chooseForComparison} />)}</div>
+      </div>}
+      {view === "compare" && <div className="page-stack">
+        <PageTitle eyebrow="Read-only demo" title="Compare programmes" description="Compare two to four local demonstration records. Selections are not saved or sent to a service." />
+        <div className="notice notice-warning" role="status">No fees, cutoffs, eligibility conclusions, or verified admission claims are included.</div>
+        <section className="card"><div className="section-heading"><div><h2>Select 2–4 demonstration programmes</h2><p className="muted">{selectedIds.length}/4 selected</p></div></div><div className="selection-grid">{DEMO_PROGRAMMES.map(programme => <label className={`selection-item${selectedIds.includes(programme.id) ? " selected" : ""}`} key={programme.id}><input type="checkbox" checked={selectedIds.includes(programme.id)} disabled={!selectedIds.includes(programme.id) && selectedIds.length >= 4} onChange={() => toggleComparison(programme.id)} /><span><strong>{programme.name}</strong><small>{programme.discipline} · DEMO_ONLY</small></span></label>)}</div><button className="button button-primary" disabled={selectedIds.length < 2} onClick={() => setCompared(demoCompared)}>Compare selected demo programmes</button></section>
+        {compared && compared.length >= 2 && <DemoComparisonTable programmes={compared} />}
+      </div>}
+      {view === "careers" && <div className="page-stack">
+        <PageTitle eyebrow="Read-only demo" title="Career explorer" description="Illustrative career pathway labels connected to demonstration programmes; no job or salary outcomes are implied." />
+        <div className="notice notice-warning" role="status">Illustrative pathways only — no job guarantees, salaries, or placement claims.</div>
+        <div className="programme-grid">{careerPathways.map(pathway => {
+          const related = DEMO_PROGRAMMES.filter(programme => programme.careerPathways.includes(pathway));
+          return <article className="card career-card" key={pathway}><div className="career-heading"><span className="card-icon"><BriefcaseBusiness size={20} /></span><Badge tone="warning">Illustrative pathway</Badge></div><h2>{pathway}</h2><p>This is a demonstration career label, not a verified career outcome.</p><h3>Related demonstration programmes</h3><div className="chip-list">{related.map(programme => <Badge key={programme.id} tone="warning">{programme.name} · DEMO_ONLY</Badge>)}</div></article>;
+        })}</div>
+      </div>}
+      {view === "graph" && <div className="page-stack">
+        <PageTitle eyebrow="Read-only demo" title="Knowledge graph" description="Relationships are descriptive links from illustrative data only; they do not represent verified admissions facts." />
+        <div className="notice notice-warning" role="status">All nodes are marked DEMO_ONLY. No eligibility or admission relationships are present.</div>
+        <div className="search-field"><Search size={18} /><input aria-label="Search demo knowledge graph" placeholder="Find a demo node" value={graphQuery} onChange={event => setGraphQuery(event.target.value)} /></div>
+        {flowNodes.length ? <GraphCanvas nodes={flowNodes} edges={flowEdges} onNodeSelect={setSelectedNodeId} /> : <EmptyState title="No graph nodes match" message="Try a different search." action={<button className="button button-secondary" onClick={() => setGraphQuery("")}>Clear search</button>} />}
+        {selectedNode && <aside className="card graph-node-details"><span className="eyebrow">{selectedNode.label}</span><h2>{selectedNode.name}</h2><small className="data-note">Verification: DEMO_ONLY · Source: Illustrative demonstration data</small></aside>}
+      </div>}
+    </main>
+  </div>;
+}
+
+function ComparisonTable({ programmes }: { programmes: ProgrammeComparison[] }) {
+  const criteriaValue = (programme: Programme, value: string | number | null | undefined) => {
+    if (value != null && value !== "") return value;
+    return programme.criteria_status === "VERIFIED" ? "Not available" : "Not verified";
+  };
+  const rows: Array<[string, (programme: ProgrammeComparison) => ReactNode]> = [
     ["University", programme => programme.university?.name || "Not listed"],
     ["Location", programme => programme.university?.location || "Not listed"],
     ["Discipline", programme => programme.discipline || "Not listed"],
-    ["Annual fee", programme => programme.annual_fee == null ? "Not listed" : `₹${programme.annual_fee.toLocaleString("en-IN")}`],
+    ["Academic year", programme => programme.academic_year || "Not specified"],
+    ["Eligibility status", programme => <><Badge>{programme.eligibility_status}</Badge>{programme.eligibility_missing.length > 0 && <small className="data-note">{programme.eligibility_missing.join("; ")}</small>}</>],
+    ["Annual fee", programme => programme.annual_fee == null ? criteriaValue(programme, null) : `₹${programme.annual_fee.toLocaleString("en-IN")}`],
     ["Duration", programme => programme.duration_years == null ? "Not listed" : `${programme.duration_years} years`],
-    ["Minimum marks", programme => programme.minimum_percentage == null ? "Not listed" : `${programme.minimum_percentage}%`],
-    ["Required subjects", programme => programme.required_subjects.join(", ") || "Not listed"],
-    ["Entrance exams", programme => programme.entrance_exams.join(", ") || "Not listed"],
-    ["Admission criteria status", programme => <Badge tone={programme.verification_status === "VERIFIED" ? "success" : "warning"}>{programme.verification_status || "unknown"} · {programme.academic_year || "year unknown"}</Badge>],
+    ["Minimum marks", programme => programme.minimum_percentage == null ? criteriaValue(programme, null) : `${programme.minimum_percentage}%`],
+    ["Required subjects", programme => programme.required_subjects.length ? programme.required_subjects.join(", ") : criteriaValue(programme, null)],
+    ["Entrance exams", programme => programme.entrance_exams.length ? programme.entrance_exams.join(", ") : criteriaValue(programme, null)],
+    ["Admission criteria status", programme => <Badge tone={programme.criteria_status === "VERIFIED" ? "success" : "warning"}>{criteriaStatusLabel(programme.criteria_status || programme.verification_status)}</Badge>],
     ["Fee status", programme => <Badge tone={programme.fee_verification_status === "VERIFIED" ? "success" : "warning"}>{programme.fee_verification_status || "unknown"} · {programme.fee_academic_year || "year unknown"}</Badge>],
     ["Admission source", programme => <SourceLink url={programme.source_url} title={programme.source_title} />],
     ["Fee source", programme => <SourceLink url={programme.fee_source_url} title={programme.fee_source_title} />],
+    ["Career pathways", programme => programme.career_pathways.length ? programme.career_pathways.map(career => `${career.name} (${career.verification_status})`).join(", ") : "Not available"],
   ];
   return <div className="comparison-table-wrap"><table className="comparison-table"><thead><tr><th>Criteria</th>{programmes.map(programme => <th key={programme.id}>{programme.name}</th>)}</tr></thead><tbody>{rows.map(([label, value]) => <tr key={label}><th>{label}</th>{programmes.map(programme => <td key={programme.id}>{value(programme)}</td>)}</tr>)}</tbody></table><p className="data-note">Catalogue comparisons are informational. Confirm current fees and admission criteria with the institution.</p></div>;
 }
@@ -530,45 +847,106 @@ function GraphPage() {
   const academicYear = useMemo(() => currentAcademicYear(), []);
   const graphLoader = useCallback(() => api.graph(academicYear), [academicYear]);
   const graph = useRemote(graphLoader);
+  const [includeDemo, setIncludeDemo] = useState(false);
+  const [query, setQuery] = useState("");
+  const [nodeType, setNodeType] = useState("");
+  const [relationship, setRelationship] = useState("");
+  const [selectedNodeId, setSelectedNodeId] = useState("");
+  const combinedGraph = useMemo(
+    () => graph.data ? semanticNetworkWithDemo(graph.data, includeDemo) : null,
+    [graph.data, includeDemo],
+  );
   if (graph.loading) return <Loading label="Loading knowledge network…" />;
-  if (graph.error || !graph.data) return <ErrorState message={graph.error || "Knowledge network data is unavailable."} retry={() => void graph.reload()} />;
-  const nodes = graph.data.nodes.map((node, index) => ({
-    id: node.id,
-    type: "knowledge",
-    data: {
-      category: node.label,
-      name: node.name,
-      verificationStatus: node.verification_status,
-      academicYear: node.academic_year,
-      sourceUrl: node.source_url,
-    },
-    position: { x: (index % 4) * 230, y: Math.floor(index / 4) * 150 },
-    className: "graph-node",
-  }));
-  const edges = graph.data.edges.map((edge, index) => ({
-    id: edge.id || `semantic-${index}`,
+  if (graph.error || !combinedGraph) return <ErrorState message={graph.error || "Knowledge network data is unavailable."} retry={() => void graph.reload()} />;
+  const graphNodes = combinedGraph.nodes;
+  const graphEdges = combinedGraph.edges;
+  const nodeTypes = Array.from(new Set(graphNodes.map(node => node.label))).sort();
+  const relationTypes = Array.from(new Set(graphEdges.map(edge => edge.label))).sort();
+  const matchingIds = new Set(
+    graphNodes
+      .filter(node => (!nodeType || node.label === nodeType) && node.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+      .map(node => node.id),
+  );
+  const visibleIds = new Set(matchingIds);
+  if (query.trim()) {
+    for (const edge of graphEdges) {
+      if (matchingIds.has(edge.source)) visibleIds.add(edge.target);
+      if (matchingIds.has(edge.target)) visibleIds.add(edge.source);
+    }
+  }
+  const visibleNodes = graphNodes.filter(node =>
+    visibleIds.has(node.id) && (!nodeType || node.label === nodeType),
+  );
+  const visibleEdges = graphEdges.filter(edge =>
+    visibleIds.has(edge.source)
+    && visibleIds.has(edge.target)
+    && (!relationship || edge.label === relationship),
+  );
+  const categoryOrder = Array.from(new Set(visibleNodes.map(node => node.label))).sort();
+  const categoryRows = new Map<string, number>();
+  const connectedIds = new Set<string>();
+  for (const edge of visibleEdges) {
+    if (edge.source === selectedNodeId) connectedIds.add(edge.target);
+    if (edge.target === selectedNodeId) connectedIds.add(edge.source);
+  }
+  const nodes: Node<GraphNodeData>[] = visibleNodes.map(node => {
+    const row = categoryRows.get(node.label) || 0;
+    categoryRows.set(node.label, row + 1);
+    return {
+      id: node.id,
+      type: "knowledge",
+      data: {
+        category: node.label,
+        name: node.name,
+        verificationStatus: node.verification_status,
+        academicYear: node.academic_year,
+        sourceUrl: node.source_url,
+        dataSource: node.data_source,
+      },
+      position: { x: categoryOrder.indexOf(node.label) * 340, y: row * 150 },
+      className: node.id === selectedNodeId ? "graph-node graph-node-selected" : connectedIds.has(node.id) ? "graph-node graph-node-connected" : "graph-node",
+    };
+  });
+  const edges: Edge[] = visibleEdges.map(edge => ({
+    id: edge.id,
     type: "knowledge",
     source: edge.source,
     target: edge.target,
     label: edge.label,
-    animated: false,
+    style: selectedNodeId && (edge.source === selectedNodeId || edge.target === selectedNodeId)
+      ? { stroke: "#5146d8", strokeWidth: 2 }
+      : { stroke: "#aeb8c9", strokeWidth: 1 },
   }));
+  const selectedNode = graphNodes.find(node => node.id === selectedNodeId);
   return <div className="page-stack"><PageTitle eyebrow="Connected knowledge" title="Knowledge graph" description="Explore semantic relationships assembled from your profile and PostgreSQL catalogue records." />
-    <div className="notice notice-info" role="status"><Network size={18} /><span>Relationships are built from application data for {graph.data.academic_year || "the selected academic year"}. Admission requirements are linked only when verified for that year.</span></div>
-    {nodes.length ? <div className="graph-canvas"><ReactFlow nodes={nodes} edges={edges} nodeTypes={graphNodeTypes} edgeTypes={graphEdgeTypes} fitView fitViewOptions={{ padding: 0.2 }} nodesDraggable nodesConnectable={false} elementsSelectable><Background color="#dbe2ef" gap={22} /><Controls /></ReactFlow></div> : <EmptyState title="No graph relationships to display" message="Add subjects, entrance examinations, interests, and skills to your profile or check the application catalogue." />}
+    <div className="notice notice-info" role="status"><Network size={18} /><span>{includeDemo ? "The demonstration view adds DEMO_ONLY programme, subject, skill, and illustrative career nodes. Its relationships are descriptive only; no admission facts are represented." : `Relationships are built from application data for ${combinedGraph.academic_year || "the selected academic year"}. Admission requirements are linked only when verified for that year.`}</span></div>
+    <div className="graph-filters"><label><Search size={16} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Find a node by name" aria-label="Search knowledge graph nodes" /></label><label>Node type<select value={nodeType} onChange={event => setNodeType(event.target.value)}><option value="">All node types</option>{nodeTypes.map(type => <option key={type}>{type}</option>)}</select></label><label>Relationship<select value={relationship} onChange={event => setRelationship(event.target.value)}><option value="">All relationships</option>{relationTypes.map(type => <option key={type}>{type}</option>)}</select></label><label className="demo-graph-toggle"><input type="checkbox" checked={includeDemo} onChange={event => { setIncludeDemo(event.target.checked); setSelectedNodeId(""); }} /><span>Include demonstration catalogue view</span></label></div>
+    {nodes.length ? <GraphCanvas nodes={nodes} edges={edges} onNodeSelect={setSelectedNodeId} /> : <EmptyState title="No graph relationships match these filters" message="Clear the filters or add profile facts to build more semantic relationships." action={<button className="button button-secondary" onClick={() => { setQuery(""); setNodeType(""); setRelationship(""); }}>Clear filters</button>} />}
+    {selectedNode && <aside className="card graph-node-details" aria-live="polite"><div className="section-heading"><div><span className="eyebrow">{selectedNode.label}</span><h2>{selectedNode.name}</h2></div><button className="button button-secondary" onClick={() => setSelectedNodeId("")}>Clear selection</button></div><p>Connected relationships: {visibleEdges.filter(edge => edge.source === selectedNode.id || edge.target === selectedNode.id).length}</p><small className="data-note">Verification: {selectedNode.verification_status || "not applicable"} · Academic year: {selectedNode.academic_year || "not specified"}{selectedNode.data_source ? ` · Source: ${selectedNode.data_source}` : ""}</small>{selectedNode.source_url && <SourceLink url={selectedNode.source_url} title={selectedNode.name} />}</aside>}
     <div className="graph-legend"><span>Student</span><span>Subject</span><span>Entrance exam</span><span>University</span><span>Programme</span><span>Interest</span><span>Skill</span><span>Career</span><span>Source document</span></div>
   </div>;
 }
 
-function KnowledgeGraphNode({ data }: NodeProps<{ category: string; name: string; verificationStatus?: string | null; academicYear?: string | null; sourceUrl?: string | null }>) {
-  return <><Handle type="target" position={Position.Left} /><div className="graph-node-content"><span>{data.category}</span><strong>{data.name}</strong>{(data.verificationStatus || data.academicYear) && <small>{[data.verificationStatus, data.academicYear].filter(Boolean).join(" · ")}</small>}{data.sourceUrl && <a href={data.sourceUrl} target="_blank" rel="noreferrer">Source</a>}</div><Handle type="source" position={Position.Right} /></>;
+type GraphNodeData = { category: string; name: string; verificationStatus?: string | null; academicYear?: string | null; sourceUrl?: string | null; dataSource?: string | null };
+
+function GraphCanvas({ nodes, edges, onNodeSelect }: { nodes: Node<GraphNodeData>[]; edges: Edge[]; onNodeSelect: (id: string) => void }) {
+  return <ReactFlowProvider><GraphCanvasContents nodes={nodes} edges={edges} onNodeSelect={onNodeSelect} /></ReactFlowProvider>;
+}
+
+function GraphCanvasContents({ nodes, edges, onNodeSelect }: { nodes: Node<GraphNodeData>[]; edges: Edge[]; onNodeSelect: (id: string) => void }) {
+  const { fitView } = useReactFlow();
+  return <div className="graph-canvas"><ReactFlow nodes={nodes} edges={edges} nodeTypes={graphNodeTypes} edgeTypes={graphEdgeTypes} fitView fitViewOptions={{ padding: 0.25 }} nodesDraggable={false} nodesConnectable={false} elementsSelectable onNodeClick={(_, node) => onNodeSelect(node.id)}><Background color="#dbe2ef" gap={22} /><Controls /></ReactFlow><button className="button button-secondary graph-fit" onClick={() => void fitView({ padding: 0.25, duration: 250 })}>Fit to screen</button></div>;
+}
+
+function KnowledgeGraphNode({ data }: NodeProps<GraphNodeData>) {
+  return <><Handle type="target" position={Position.Left} /><div className="graph-node-content"><span>{data.category}</span><strong>{data.name}</strong>{(data.verificationStatus || data.academicYear) && <small>{[data.verificationStatus, data.academicYear].filter(Boolean).join(" · ")}</small>}{data.dataSource && <small>{data.dataSource}</small>}{data.sourceUrl && <a href={data.sourceUrl} target="_blank" rel="noreferrer">Source</a>}</div><Handle type="source" position={Position.Right} /></>;
 }
 
 function KnowledgeGraphEdge(props: EdgeProps) {
   const [path, labelX, labelY] = getBezierPath(props);
   return <>
     <BaseEdge id={props.id} path={path} markerEnd={props.markerEnd} style={props.style} />
-    <EdgeLabelRenderer><div className="graph-edge-label" style={{ transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)` }}>{props.label}</div></EdgeLabelRenderer>
+    {props.selected && <EdgeLabelRenderer><div className="graph-edge-label" style={{ transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)` }}>{props.label}</div></EdgeLabelRenderer>}
   </>;
 }
 
@@ -701,7 +1079,19 @@ function StaticMetric({ label, value, icon }: { label: string; value: number; ic
 }
 
 function ProgrammeCard({ programme, actions }: { programme: Programme; actions: ReactNode }) {
-  return <article className="card programme-card"><div className="programme-card-top"><span className="card-icon"><GraduationCap size={20} /></span><Badge tone={programme.verification_status === "VERIFIED" ? "success" : "warning"}>{programme.verification_status || "UNVERIFIED"}</Badge></div><h2>{programme.name}</h2><p className="university-line">{programme.university?.name || "University not provided"}</p><div className="programme-facts"><span><Compass size={15} />{programme.university?.location || "Location not listed"}</span><span><span aria-hidden="true">₹</span>{programme.annual_fee == null ? "Fee not verified" : `₹${programme.annual_fee.toLocaleString("en-IN")} / year`}</span></div><small className="data-note">Academic year: {programme.academic_year || "not specified"} · Fee status: {programme.fee_verification_status || "unknown"}</small><SourceLink url={programme.source_url} title={programme.source_title} /><div className="card-actions">{actions}</div></article>;
+  const criteriaStatus = programme.criteria_status || programme.verification_status;
+  return <article className="card programme-card"><div className="programme-card-top"><span className="card-icon"><GraduationCap size={20} /></span><Badge tone={criteriaStatus === "VERIFIED" ? "success" : "warning"}>{criteriaStatusLabel(criteriaStatus)}</Badge></div><h2>{programme.name}</h2><p className="university-line">{programme.university?.name || "University not provided"}</p><div className="programme-facts"><span><Compass size={15} />{programme.university?.location || "Location not listed"}</span><span><span aria-hidden="true">₹</span>{programme.annual_fee == null ? "Fee not verified" : `₹${programme.annual_fee.toLocaleString("en-IN")} / year`}</span></div><small className="data-note">Academic year: {programme.academic_year || "not specified"} · Fee status: {programme.fee_verification_status || "unknown"}</small><SourceLink url={programme.source_url} title={programme.source_title} /><div className="card-actions">{actions}</div></article>;
+}
+
+function criteriaStatusLabel(status?: string | null) {
+  switch (status) {
+    case "VERIFIED": return "Verified";
+    case "EXPIRED": return "Expired";
+    case "UNAVAILABLE": return "Unavailable";
+    case "NOT_CURRENT_FOR_YEAR": return "Not current for selected year";
+    case "PENDING_VERIFICATION": return "Pending verification";
+    default: return status || "Unknown";
+  }
 }
 
 function InlineError({ message, retry }: { message: string; retry: () => void }) {

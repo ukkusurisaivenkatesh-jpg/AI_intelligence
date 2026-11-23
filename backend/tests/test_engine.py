@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from app.engine.frames import FrameRegistry
 from app.engine.rules import RuleEngine
-from app.services import evaluate_eligibility, rank_recommendations, suitability_score
+from app.services import evaluate_eligibility, rank_recommendations
 
 
 def programme(fee=100000, minimum=60):
@@ -228,31 +228,34 @@ def test_recommendations_use_matching_verified_academic_year():
     profile = {"qualification": "12th Grade", "aggregate_marks": 82, "subject_marks": {"Physics": 80, "Mathematics": 88}, "entrance_scores": {"JEE Main": 90}, "annual_budget": 150000}
     results = rank_recommendations(profile, [programme()], academic_year="2026-27")
     assert len(results) == 1
-    explanations = results[0]["suitability"]["explanation"]
-    assert any("Test fixture" in item and "test-fixture" in item for item in explanations)
-    assert any("fee source" in item.lower() and "test-fee-fixture" in item for item in explanations)
+    assert results[0]["programme"]["source_title"] == "Test fixture"
+    assert results[0]["programme"]["fee_source_url"].endswith("test-fee-fixture")
+    assert "relevance_reasons" in results[0]
+    assert "suitability" not in results[0]
     assert rank_recommendations(profile, [programme()], academic_year="2027-28") == []
 
 
-def test_suitability_ranks_academic_and_verified_entrance_performance():
-    criteria = programme()
-    criteria["entrance_requirements"] = {"JEE Main": {"maximum_rank": 5000}}
-    strong = {
-        "aggregate_marks": 92,
-        "entrance_scores": {"JEE Main": {"rank": 1200}},
-        "annual_budget": None,
-    }
-    weaker = {
-        "aggregate_marks": 78,
-        "entrance_scores": {"JEE Main": {"rank": 4200}},
-        "annual_budget": None,
+def test_recommendations_explain_profile_matches_without_numeric_scores():
+    preferred = programme()
+    preferred["name"] = "B.Tech Technology Test Fixture"
+    other = {**programme(), "id": 2, "name": "B.Tech Physics Test Fixture", "discipline": "Physics"}
+    profile = {
+        "qualification": "12th Grade",
+        "aggregate_marks": 82,
+        "subject_marks": {"Physics": 80, "Mathematics": 88},
+        "entrance_scores": {"JEE Main": 90},
+        "interests": ["Technology"],
+        "skills": ["Technology"],
+        "annual_budget": 150000,
+        "preferred_location": "Pune",
     }
 
-    strong_score = suitability_score(strong, criteria)
-    weak_score = suitability_score(weaker, criteria)
-    assert strong_score["factors"]["academic"] > weak_score["factors"]["academic"]
-    assert strong_score["factors"]["entrance"] > weak_score["factors"]["entrance"]
-    assert any("unknown (fee or budget not verified)" in item for item in strong_score["explanation"])
+    results = rank_recommendations(profile, [other, preferred], academic_year="2026-27")
+
+    assert [item["programme"]["id"] for item in results] == [1, 2]
+    assert any("Interest aligns" in reason for reason in results[0]["relevance_reasons"])
+    assert any("Catalogue location matches" in reason for reason in results[0]["relevance_reasons"])
+    assert all("suitability" not in item for item in results)
 
 
 def test_10_diverse_profiles():

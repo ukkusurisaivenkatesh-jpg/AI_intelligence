@@ -76,7 +76,7 @@ def test_recommendation_and_course_explanation_use_verified_records():
     assert len(recommendations["recommendations"]) == 1
     assert "Bachelor of Computer Science at Example University: Eligible" in recommendations["answer"]
     assert "affordability affordable" in recommendations["answer"]
-    assert "not admission probability" in recommendations["answer"]
+    assert "%" not in recommendations["answer"]
 
     explanation = build_rule_based_counselling_response(
         "Why is Bachelor of Computer Science recommended?",
@@ -87,7 +87,7 @@ def test_recommendation_and_course_explanation_use_verified_records():
     )
     assert "Bachelor of Computer Science at Example University: Eligible" in explanation["answer"]
     assert "₹100,000" in explanation["answer"]
-    assert "Suitability explanation" in explanation["answer"]
+    assert "Profile match:" in explanation["answer"]
     assert "Official programme criteria" in explanation["answer"]
 
 

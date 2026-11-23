@@ -49,6 +49,7 @@ export type Programme = {
   source_url?: string | null;
   source_title?: string | null;
   verification_status?: string;
+  criteria_status?: string;
   minimum_qualification?: string | null;
   additional_admission_conditions?: Array<Record<string, unknown>>;
   criteria_complete?: boolean;
@@ -67,6 +68,12 @@ export type Programme = {
   last_verified: string | null;
   university: University | null;
 };
+export type ProgrammeCatalogue = { items: Programme[]; total: number; offset: number; limit: number };
+export type ProgrammeComparison = Programme & {
+  eligibility_status: string;
+  eligibility_missing: string[];
+  career_pathways: Array<{ name: string; verification_status: string }>;
+};
 export type EligibilityResult = {
   programme: Programme;
   status: string;
@@ -78,17 +85,33 @@ export type EligibilityResult = {
   missing: string[];
   trace: Array<Record<string, unknown>>;
 };
-export type Recommendation = EligibilityResult & {
-  suitability: { score: number; factors: Record<string, number>; explanation: string[] };
+export type Recommendation = EligibilityResult & { relevance_reasons: string[] };
+export type ExploreSuggestion = {
+  programme: Programme;
+  eligibility_status: string;
+  affordability: EligibilityResult["affordability"];
+  missing: string[];
+  unsatisfied: string[];
+  relevance_reasons: string[];
+};
+export type RecommendationCategories = {
+  verified_recommendations: Recommendation[];
+  explore_suggestions: ExploreSuggestion[];
 };
 export type Career = {
-  id: number;
+  id: number | string;
   name: string;
   description: string;
+  related_subjects?: string[];
+  related_programmes?: Array<{ id: number; name: string; verification_status: string; academic_year: string | null }>;
   technical_skills: string[];
   soft_skills: string[];
   certifications: string[];
   roadmap: string[];
+  learning_areas?: string[];
+  responsibilities?: string[];
+  related_disciplines?: string[];
+  illustrative?: boolean;
   source_url?: string | null;
   source_title?: string | null;
   verification_status?: string;
@@ -108,6 +131,7 @@ export type SemanticNetwork = {
     verification_status?: string | null;
     academic_year?: string | null;
     source_url?: string | null;
+    data_source?: string | null;
   }>;
   edges: Array<{ id: string; source: string; target: string; label: string }>;
 };
@@ -181,8 +205,14 @@ export const api = {
   dashboard: (academicYear: string) => request<{ student: { name: string; email: string }; profile: Profile; recommendations: Recommendation[]; shortlist_count: number; academic_year: string | null }>(`/students/me/dashboard?academic_year=${encodeURIComponent(academicYear)}`),
   profile: () => request<Profile>("/students/me/profile"),
   saveProfile: (profile: Profile) => request<Profile>("/students/me/profile", { method: "PUT", body: JSON.stringify(profile) }),
-  programmes: (academicYear: string) => request<Programme[]>(`/programmes?academic_year=${encodeURIComponent(academicYear)}`),
-  recommendations: (academicYear: string) => request<Recommendation[]>(`/recommendations?academic_year=${encodeURIComponent(academicYear)}`),
+  programmes: (academicYear: string, filters: { q?: string; status?: string; institution?: string; location?: string; category?: string; offset?: number; limit?: number } = {}) => {
+    const params = new URLSearchParams({ academic_year: academicYear, offset: String(filters.offset ?? 0), limit: String(filters.limit ?? 50) });
+    for (const key of ["q", "status", "institution", "location", "category"] as const) {
+      if (filters[key]) params.set(key, filters[key]!);
+    }
+    return request<ProgrammeCatalogue>(`/programmes?${params.toString()}`);
+  },
+  recommendations: (academicYear: string) => request<RecommendationCategories>(`/recommendations?academic_year=${encodeURIComponent(academicYear)}`),
   eligibility: (academicYear: string) => request<EligibilityResult[]>(`/eligibility/evaluate?academic_year=${encodeURIComponent(academicYear)}`, { method: "POST" }),
   whatIf: (changes: Partial<Profile> & { academic_year: string }) => request<{ newly_eligible: EligibilityResult[]; no_longer_eligible: Programme[]; simulated: Recommendation[] }>("/what-if", { method: "POST", body: JSON.stringify(changes) }),
   careers: () => request<Career[]>("/careers"),
@@ -194,7 +224,7 @@ export const api = {
   shortlist: () => request<Programme[]>("/shortlist"),
   save: (id: number) => request<{ saved: boolean }>(`/shortlist/${id}`, { method: "POST" }),
   removeShortlist: (id: number) => request<{ saved: boolean }>(`/shortlist/${id}`, { method: "DELETE" }),
-  compare: (ids: number[], academicYear: string) => request<Programme[]>("/compare", { method: "POST", body: JSON.stringify({ programme_ids: ids, academic_year: academicYear }) }),
+  compare: (ids: number[], academicYear: string) => request<ProgrammeComparison[]>("/compare", { method: "POST", body: JSON.stringify({ programme_ids: ids, academic_year: academicYear || null }) }),
   counsellor: (message: string, academicYear: string, profileChanges?: Partial<Profile>) => request<{ answer: string; recommendations: Recommendation[]; missing: string[]; source: string; engine: string; scenario: boolean }>("/counsellor", { method: "POST", body: JSON.stringify({ message, academic_year: academicYear, ...(profileChanges && Object.keys(profileChanges).length ? { profile_changes: profileChanges } : {}) }) }),
   counsellorHistory: () => request<ChatHistoryItem[]>("/counsellor/history"),
   admin: () => request<{ universities: number; programmes: number; careers: number; rules: number; students: number }>("/admin/overview"),
